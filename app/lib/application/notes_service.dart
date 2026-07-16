@@ -1,27 +1,34 @@
 import 'package:drift/drift.dart';
-import 'package:uuid/uuid.dart';
 
+import '../domain/clock.dart';
 import '../domain/document.dart';
+import '../domain/id_generator.dart';
 import '../domain/types.dart';
 import '../infrastructure/asr/local_speech_recognizer.dart';
 import '../infrastructure/db/database.dart';
 import '../infrastructure/media_store.dart';
 
-/// Use cases of the vertical slice. Every mutation is a single transaction:
-/// it either completes fully or leaves no visible state (ТЗ 0.9).
+/// Use cases заметок. Каждая мутация — одна транзакция: изменение сущности,
+/// NoteEvent и OperationJournal фиксируются вместе или не фиксируются вовсе
+/// (ТЗ 0.5.4, 0.9).
 class NotesService {
   final AppDatabase db;
   final MediaStore media;
   final LocalSpeechRecognizer recognizer;
-  final Uuid _uuid = const Uuid();
+  final Clock clock;
+  final IdGenerator ids;
+  final String deviceId;
 
   NotesService({
     required this.db,
     required this.media,
     required this.recognizer,
+    required this.clock,
+    required this.ids,
+    required this.deviceId,
   });
 
-  int _nowUtc() => DateTime.now().toUtc().millisecondsSinceEpoch;
+  // ---------- Queries ----------
 
   Stream<List<Note>> watchNotes() {
     final query = db.select(db.notes)
@@ -51,35 +58,66 @@ class NotesService {
     return query.watch();
   }
 
+  /// FTS5-поиск по title + plain text (FR-SRC-001).
+  Future<List<Note>> searchNotes(String query, {int limit = 50}) async {
+    final match = _toFtsQuery(query);
+    if (match.isEmpty) return const [];
+    final rows = await db.searchNotes(match, limit).get();
+    return rows.map((row) => row.n).toList(growable: false);
+  }
+
+  /// Пользовательский ввод — не FTS-синтаксис: каждое слово экранируется
+  /// кавычками и матчится по префиксу.
+  static String _toFtsQuery(String raw) {
+    final words = raw
+        .split(RegExp(r'\s+'))
+        .map((w) => w.replaceAll('"', '').trim())
+        .where((w) => w.isNotEmpty);
+    return words.map((w) => '"$w"*').join(' ');
+  }
+
+  // ---------- Mutations ----------
+
   Future<String> createTextNote(String text) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty) {
       throw ArgumentError('note text must not be empty');
     }
     final document = PotokDocument.fromPlainText(trimmed);
-    final id = _uuid.v7();
-    final now = _nowUtc();
-    await db.into(db.notes).insert(
-          NotesCompanion.insert(
-            id: id,
-            documentJson: document.encode(),
-            documentPlainText: document.plainText,
-            sourceKind: SourceKind.keyboard,
-            createdAtUtc: now,
-            updatedAtUtc: now,
-          ),
-        );
+    final id = ids.newId();
+    final now = clock.nowUtcMillis();
+    await db.transaction(() async {
+      await db.into(db.notes).insert(
+            NotesCompanion.insert(
+              id: id,
+              documentJson: document.encode(),
+              documentPlainText: document.plainText,
+              sourceKind: SourceKind.keyboard,
+              createdAtUtc: now,
+              updatedAtUtc: now,
+            ),
+          );
+      await _appendEvent(id, NoteEventKind.created, projectId: null, at: now);
+      await _journal(
+        entityId: id,
+        operationKind: 'note.create',
+        baseRevision: null,
+        newRevision: 1,
+        at: now,
+      );
+    });
     return id;
   }
 
-  /// Registers a staged recording and returns the absolute path the recorder
-  /// must write to. DB row is created in `staging` before any bytes exist.
+  /// Регистрирует staged-запись и возвращает путь для рекордера. Строки в БД
+  /// создаются в `staging` до появления байтов; заметка скрыта из списков
+  /// до финализации.
   Future<StagedRecording> beginAudioNote({required String extension}) async {
-    final noteId = _uuid.v7();
-    final assetId = _uuid.v7();
+    final noteId = ids.newId();
+    final assetId = ids.newId();
     final relativePath = media.relativePathFor(assetId, extension);
     await media.prepareStaging(relativePath);
-    final now = _nowUtc();
+    final now = clock.nowUtcMillis();
     await db.transaction(() async {
       await db.into(db.notes).insert(
             NotesCompanion.insert(
@@ -89,7 +127,6 @@ class NotesService {
               sourceKind: SourceKind.audio,
               createdAtUtc: now,
               updatedAtUtc: now,
-              // Hidden from lists until the recording is finalized.
               deletedAtUtc: Value(now),
             ),
           );
@@ -99,7 +136,7 @@ class NotesService {
               ownerNoteId: noteId,
               kind: AssetKind.audio,
               relativePath: relativePath,
-              mimeType: 'audio/wav',
+              mimeType: extension == 'wav' ? 'audio/wav' : 'audio/mp4',
               lifecycleState: AssetLifecycle.staging,
               createdAtUtc: now,
               updatedAtUtc: now,
@@ -114,8 +151,8 @@ class NotesService {
     );
   }
 
-  /// Finalize protocol: validate + hash + atomic rename, then a short DB
-  /// commit flips asset to `ready` and makes the note visible (FR-AUD-002).
+  /// Финализация: валидация + hash + atomic rename, затем короткий DB-commit
+  /// делает asset `ready`, заметку видимой и пишет событие создания.
   Future<void> finishAudioNote(
     StagedRecording staged, {
     required Duration duration,
@@ -124,7 +161,7 @@ class NotesService {
     required int channels,
   }) async {
     final result = await media.finalize(staged.relativePath);
-    final now = _nowUtc();
+    final now = clock.nowUtcMillis();
     await db.transaction(() async {
       await (db.update(db.mediaAssets)
             ..where((a) => a.id.equals(staged.assetId)))
@@ -149,21 +186,33 @@ class NotesService {
         deletedAtUtc: const Value(null),
         updatedAtUtc: Value(now),
       ));
+      await _appendEvent(staged.noteId, NoteEventKind.created,
+          projectId: null, at: now);
+      await _journal(
+        entityId: staged.noteId,
+        operationKind: 'note.create_audio',
+        baseRevision: null,
+        newRevision: 1,
+        at: now,
+      );
     });
   }
 
-  /// Cancelled/failed recording: discard staged bytes, keep no visible note.
+  /// Отменённая/сорвавшаяся запись: staged-байты и скрытые строки удаляются,
+  /// видимого состояния не существовало.
   Future<void> abortAudioNote(StagedRecording staged) async {
     await media.discardStaging(staged.relativePath);
     await db.transaction(() async {
-      await (db.delete(db.mediaAssets)..where((a) => a.id.equals(staged.assetId)))
+      await (db.delete(db.mediaAssets)
+            ..where((a) => a.id.equals(staged.assetId)))
           .go();
-      await (db.delete(db.notes)..where((n) => n.id.equals(staged.noteId))).go();
+      await (db.delete(db.notes)..where((n) => n.id.equals(staged.noteId)))
+          .go();
     });
   }
 
-  /// Runs local ASR for a ready audio asset. Each attempt creates a new
-  /// TranscriptRevision; user text is never touched here (FR-ASR-003/004).
+  /// Каждая попытка ASR — новая TranscriptRevision; текст пользователя здесь
+  /// не изменяется (FR-ASR-003/004).
   Future<TranscriptRevision> transcribe(
     String noteId,
     String assetId, {
@@ -172,7 +221,7 @@ class NotesService {
     final asset = await (db.select(db.mediaAssets)
           ..where((a) => a.id.equals(assetId)))
         .getSingle();
-    final revisionId = _uuid.v7();
+    final revisionId = ids.newId();
     await db.into(db.transcriptRevisions).insert(
           TranscriptRevisionsCompanion.insert(
             id: revisionId,
@@ -182,7 +231,7 @@ class NotesService {
             modelId: '',
             language: languageHint,
             state: TranscriptState.recognizing,
-            createdAtUtc: _nowUtc(),
+            createdAtUtc: clock.nowUtcMillis(),
           ),
         );
     try {
@@ -210,24 +259,12 @@ class NotesService {
         .getSingle();
   }
 
-  Future<void> _markRevision(
-    String id,
-    TranscriptState state,
-    String? error,
-  ) async {
-    await (db.update(db.transcriptRevisions)..where((r) => r.id.equals(id)))
-        .write(TranscriptRevisionsCompanion(
-      state: Value(state),
-      errorMessage: Value(error),
-    ));
-  }
-
-  /// Explicit user acceptance: transcript is appended to the document,
-  /// never replacing existing content (FR-ASR-004). Optimistic concurrency
-  /// via revision guard (ТЗ 0.9).
+  /// Явное принятие: расшифровка добавляется параграфом, существующий текст
+  /// не заменяется (FR-ASR-004). Optimistic concurrency через revision guard.
   Future<void> acceptTranscript(String noteId, String revisionId) async {
     await db.transaction(() async {
-      final note = await (db.select(db.notes)..where((n) => n.id.equals(noteId)))
+      final note = await (db.select(db.notes)
+            ..where((n) => n.id.equals(noteId)))
           .getSingle();
       final revision = await (db.select(db.transcriptRevisions)
             ..where((r) => r.id.equals(revisionId)))
@@ -235,11 +272,12 @@ class NotesService {
       if (revision.state != TranscriptState.ready) {
         throw StateError('transcript is not ready');
       }
-      final document =
-          PotokDocument.decode(note.documentJson).appendParagraph(revision.rawText);
-      final now = _nowUtc();
+      final document = PotokDocument.decode(note.documentJson)
+          .appendParagraph(revision.rawText);
+      final now = clock.nowUtcMillis();
       final updated = await (db.update(db.notes)
-            ..where((n) => n.id.equals(noteId) & n.revision.equals(note.revision)))
+            ..where(
+                (n) => n.id.equals(noteId) & n.revision.equals(note.revision)))
           .write(NotesCompanion(
         documentJson: Value(document.encode()),
         documentPlainText: Value(document.plainText),
@@ -252,20 +290,100 @@ class NotesService {
       await (db.update(db.transcriptRevisions)
             ..where((r) => r.id.equals(revisionId)))
           .write(TranscriptRevisionsCompanion(acceptedAtUtc: Value(now)));
+      await _appendEvent(noteId, NoteEventKind.edited,
+          projectId: note.projectId, at: now);
+      await _journal(
+        entityId: noteId,
+        operationKind: 'note.accept_transcript',
+        baseRevision: note.revision,
+        newRevision: note.revision + 1,
+        at: now,
+      );
     });
   }
 
   Future<void> toggleDone(Note note) async {
-    final now = _nowUtc();
+    final now = clock.nowUtcMillis();
     final next =
         note.status == NoteStatus.done ? NoteStatus.inWork : NoteStatus.done;
-    await (db.update(db.notes)
-          ..where((n) => n.id.equals(note.id) & n.revision.equals(note.revision)))
-        .write(NotesCompanion(
-      status: Value(next),
-      completedAtUtc: Value(next == NoteStatus.done ? now : null),
-      updatedAtUtc: Value(now),
-      revision: Value(note.revision + 1),
+    await db.transaction(() async {
+      final updated = await (db.update(db.notes)
+            ..where((n) =>
+                n.id.equals(note.id) & n.revision.equals(note.revision)))
+          .write(NotesCompanion(
+        status: Value(next),
+        completedAtUtc: Value(next == NoteStatus.done ? now : null),
+        updatedAtUtc: Value(now),
+        revision: Value(note.revision + 1),
+      ));
+      if (updated == 0) {
+        throw StateError('note was modified concurrently, retry');
+      }
+      await _appendEvent(
+        note.id,
+        next == NoteStatus.done
+            ? NoteEventKind.completed
+            : NoteEventKind.reopened,
+        projectId: note.projectId,
+        at: now,
+      );
+      await _journal(
+        entityId: note.id,
+        operationKind:
+            next == NoteStatus.done ? 'note.complete' : 'note.reopen',
+        baseRevision: note.revision,
+        newRevision: note.revision + 1,
+        at: now,
+      );
+    });
+  }
+
+  // ---------- Internals (только внутри открытой транзакции) ----------
+
+  Future<void> _appendEvent(
+    String noteId,
+    NoteEventKind kind, {
+    required String? projectId,
+    required int at,
+  }) {
+    return db.into(db.noteEvents).insert(NoteEventsCompanion.insert(
+          id: ids.newId(),
+          noteId: noteId,
+          projectIdAtEvent: Value(projectId),
+          kind: kind,
+          occurredAtUtc: at,
+          deviceId: deviceId,
+        ));
+  }
+
+  Future<void> _journal({
+    required String entityId,
+    required String operationKind,
+    required int? baseRevision,
+    required int? newRevision,
+    required int at,
+  }) {
+    return db.into(db.operationJournal).insert(OperationJournalCompanion.insert(
+          operationId: ids.newId(),
+          deviceId: deviceId,
+          entityKind: 'note',
+          entityId: entityId,
+          baseRevision: Value(baseRevision),
+          newRevision: Value(newRevision),
+          operationKind: operationKind,
+          occurredAtUtc: at,
+        ));
+  }
+
+  Future<void> _markRevision(
+    String id,
+    TranscriptState state,
+    String? error,
+  ) async {
+    await (db.update(db.transcriptRevisions)..where((r) => r.id.equals(id)))
+        .write(TranscriptRevisionsCompanion(
+      state: Value(state),
+      errorMessage: Value(error),
     ));
   }
 }

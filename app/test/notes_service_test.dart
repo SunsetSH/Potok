@@ -3,7 +3,9 @@ import 'dart:io';
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:potok/application/notes_service.dart';
+import 'package:potok/domain/clock.dart';
 import 'package:potok/domain/document.dart';
+import 'package:potok/domain/id_generator.dart';
 import 'package:potok/domain/types.dart';
 import 'package:potok/infrastructure/asr/local_speech_recognizer.dart';
 import 'package:potok/infrastructure/db/database.dart';
@@ -38,15 +40,20 @@ void main() {
   late Directory temp;
   late _FakeRecognizer recognizer;
   late NotesService service;
+  late FixedClock clock;
 
   setUp(() async {
     db = AppDatabase(NativeDatabase.memory());
     temp = await Directory.systemTemp.createTemp('potok_service_test');
     recognizer = _FakeRecognizer();
+    clock = FixedClock(DateTime.utc(2026, 7, 16, 12));
     service = NotesService(
       db: db,
       media: MediaStore(temp),
       recognizer: recognizer,
+      clock: clock,
+      ids: SequentialIdGenerator(),
+      deviceId: 'device-test',
     );
   });
 
@@ -185,6 +192,127 @@ void main() {
       final revisions = await service.watchRevisions(staged.noteId).first;
       expect(revisions, hasLength(2));
       expect({first.id, second.id}, hasLength(2));
+    });
+  });
+
+  group('history and operation journal (WP-01)', () {
+    Future<List<NoteEvent>> eventsOf(String noteId) =>
+        (db.select(db.noteEvents)..where((e) => e.noteId.equals(noteId)))
+            .get();
+
+    Future<List<OperationJournalData>> journalOf(String entityId) =>
+        (db.select(db.operationJournal)
+              ..where((o) => o.entityId.equals(entityId)))
+            .get();
+
+    test('createTextNote writes created event and journal atomically',
+        () async {
+      final id = await service.createTextNote('x');
+      final events = await eventsOf(id);
+      expect(events.single.kind, NoteEventKind.created);
+      expect(events.single.deviceId, 'device-test');
+      final journal = await journalOf(id);
+      expect(journal.single.operationKind, 'note.create');
+      expect(journal.single.newRevision, 1);
+    });
+
+    test('toggleDone writes completed then reopened events', () async {
+      final id = await service.createTextNote('x');
+      var note = (await service.watchNotes().first).single;
+      await service.toggleDone(note);
+      note = (await service.watchNotes().first).single;
+      await service.toggleDone(note);
+      final kinds = (await eventsOf(id)).map((e) => e.kind).toList();
+      expect(
+        kinds,
+        containsAll([
+          NoteEventKind.created,
+          NoteEventKind.completed,
+          NoteEventKind.reopened,
+        ]),
+      );
+      final ops = (await journalOf(id)).map((o) => o.operationKind);
+      expect(ops, containsAll(['note.complete', 'note.reopen']));
+    });
+
+    test('stale toggleDone (concurrent edit) fails without partial state',
+        () async {
+      final id = await service.createTextNote('x');
+      final stale = (await service.watchNotes().first).single;
+      await service.toggleDone(stale); // revision 1 -> 2
+      await expectLater(service.toggleDone(stale), throwsStateError);
+      final events = await eventsOf(id);
+      // created + первый completed, второго события нет.
+      expect(events, hasLength(2));
+    });
+
+    test('accepted transcript adds edited event', () async {
+      final staged = await recordedNote();
+      final revision =
+          await service.transcribe(staged.noteId, staged.assetId);
+      await service.acceptTranscript(staged.noteId, revision.id);
+      final kinds = (await eventsOf(staged.noteId)).map((e) => e.kind);
+      expect(kinds, contains(NoteEventKind.edited));
+    });
+  });
+
+  group('full-text search (WP-01)', () {
+    test('finds notes by word prefix in RU', () async {
+      await service.createTextNote('Проверить восстановление черновика');
+      await service.createTextNote('Совсем другая заметка');
+      final hits = await service.searchNotes('восстановл');
+      expect(hits, hasLength(1));
+      expect(hits.single.documentPlainText, contains('восстановление'));
+    });
+
+    test('search is case-insensitive and follows accepted transcript',
+        () async {
+      final staged = await recordedNote();
+      final revision =
+          await service.transcribe(staged.noteId, staged.assetId);
+      await service.acceptTranscript(staged.noteId, revision.id);
+      final hits = await service.searchNotes('РАСПОЗНАННЫЙ');
+      expect(hits.map((n) => n.id), contains(staged.noteId));
+    });
+
+    test('deleted notes are not searchable, quotes are neutralized',
+        () async {
+      await service.createTextNote('уникальное слово');
+      expect(await service.searchNotes('"уникальное'), hasLength(1));
+      expect(await service.searchNotes('   '), isEmpty);
+    });
+  });
+
+  group('schema invariants (WP-01)', () {
+    test('duplicate global tag name is rejected by partial unique index',
+        () async {
+      Future<void> insertTag(String id, String name) =>
+          db.into(db.tags).insert(TagsCompanion.insert(
+                id: id,
+                scope: TagScope.global,
+                name: name,
+                normalizedName: name.toLowerCase(),
+                colorArgb: 0xFF000000,
+                createdAtUtc: 0,
+                updatedAtUtc: 0,
+              ));
+      await insertTag('t1', 'Вопрос');
+      await expectLater(insertTag('t2', 'вопрос'), throwsException);
+    });
+
+    test('project-scoped tag requires project_id (CHECK)', () async {
+      await expectLater(
+        db.into(db.tags).insert(TagsCompanion.insert(
+              id: 't3',
+              scope: TagScope.project,
+              name: 'x',
+              normalizedName: 'x',
+              colorArgb: 0,
+              createdAtUtc: 0,
+              updatedAtUtc: 0,
+            )),
+        throwsException,
+      );
     });
   });
 }

@@ -1,0 +1,9 @@
+targets:
+  $default:
+    builders:
+      drift_dev:
+        options:
+          sqlite:
+            version: "3.44"
+            modules:
+              - fts5

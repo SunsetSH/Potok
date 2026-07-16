@@ -30,10 +30,10 @@ class MediaStore {
   /// Throws [MediaFinalizeException] if the staged file is missing or empty.
   Future<({int sizeBytes, String sha256hex})> finalize(String relativePath) async {
     final partial = File(stagingPath(relativePath));
-    if (!await partial.exists()) {
+    if (!partial.existsSync()) {
       throw const MediaFinalizeException('staged file missing');
     }
-    final size = await partial.length();
+    final size = partial.lengthSync();
     if (size <= 0) {
       throw const MediaFinalizeException('staged file is empty');
     }
@@ -46,7 +46,7 @@ class MediaStore {
   /// Idempotent cleanup for failed/cancelled recordings.
   Future<void> discardStaging(String relativePath) async {
     final partial = File(stagingPath(relativePath));
-    if (await partial.exists()) await partial.delete();
+    if (partial.existsSync()) await partial.delete();
   }
 }
 
