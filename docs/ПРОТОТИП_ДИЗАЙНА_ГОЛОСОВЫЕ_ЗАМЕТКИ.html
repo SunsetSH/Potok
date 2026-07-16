@@ -1,0 +1,785 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Прототип — заметки аналитика</title>
+  <style>
+    * { box-sizing: border-box; }
+
+    :root {
+      color-scheme: light;
+      --canvas: #e9edf2;
+      --surface: #ffffff;
+      --surface-2: #f5f7fa;
+      --surface-3: #edf1f5;
+      --text: #18212f;
+      --muted: #647084;
+      --line: #dce2ea;
+      --accent: #3457d5;
+      --accent-soft: #e9edff;
+      --accent-text: #ffffff;
+      --danger: #c53c4b;
+      --risk: #b85c16;
+      --question: #2364c4;
+      --decision: #23825e;
+      --idea: #7656bd;
+      --radius: 16px;
+      --radius-small: 10px;
+      --shadow: 0 22px 60px rgb(34 45 67 / 16%);
+      --font: Inter, "Segoe UI Variable", "Segoe UI", Arial, sans-serif;
+      --mono: "Cascadia Code", Consolas, monospace;
+      --density: 1;
+    }
+
+    body[data-theme="paper"] {
+      --canvas: #e8e1d5;
+      --surface: #fffdf7;
+      --surface-2: #f8f3e8;
+      --surface-3: #eee5d6;
+      --text: #302b26;
+      --muted: #756b61;
+      --line: #ded3c3;
+      --accent: #9b4b2f;
+      --accent-soft: #f5e3d9;
+      --danger: #a9353e;
+      --radius: 9px;
+      --radius-small: 6px;
+      --shadow: 0 18px 42px rgb(65 48 30 / 17%);
+      --font: Georgia, "Times New Roman", serif;
+    }
+
+    body[data-theme="studio-night"] {
+      color-scheme: dark;
+      --canvas: #10141c; --surface: #171d27; --surface-2: #1d2531; --surface-3: #263140;
+      --text: #edf2fa; --muted: #9ba9bc; --line: #344154; --accent: #8ca7ff;
+      --accent-soft: #26345e; --accent-text: #101522; --danger: #ff7e8e;
+      --risk: #ffad66; --question: #7db2ff; --decision: #65d5aa; --idea: #bba1ff;
+      --shadow: 0 24px 70px rgb(0 0 0 / 42%);
+    }
+
+    body[data-theme="terminal"] {
+      color-scheme: dark;
+      --canvas: #07110e;
+      --surface: #0b1713;
+      --surface-2: #0f201a;
+      --surface-3: #142a22;
+      --text: #c8f7dc;
+      --muted: #77a98b;
+      --line: #244936;
+      --accent: #42e788;
+      --accent-soft: #123b25;
+      --accent-text: #04140a;
+      --danger: #ff6b73;
+      --risk: #ffb45b;
+      --question: #69a9ff;
+      --decision: #4bea91;
+      --idea: #c797ff;
+      --radius: 2px;
+      --radius-small: 2px;
+      --shadow: 0 0 0 1px #183b2a, 0 20px 60px rgb(0 0 0 / 45%);
+      --font: "Cascadia Code", Consolas, monospace;
+    }
+
+    body[data-density="compact"] { --density: .82; }
+
+    html, body { min-height: 100%; }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 12% 12%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 28rem),
+        var(--canvas);
+      color: var(--text);
+      font-family: var(--font);
+      transition: background .25s ease, color .25s ease;
+    }
+
+    button, input, textarea, select { font: inherit; }
+    button { color: inherit; }
+    button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--accent) 40%, transparent);
+      outline-offset: 2px;
+    }
+
+    .prototype-toolbar {
+      min-height: 74px;
+      padding: 14px 22px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      background: color-mix(in srgb, var(--surface) 89%, transparent);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(14px);
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+
+    .prototype-title { display: flex; align-items: center; gap: 12px; min-width: 220px; }
+    .prototype-mark {
+      width: 42px; height: 42px; border-radius: 13px;
+      display: grid; place-items: center;
+      background: var(--accent); color: var(--accent-text);
+      font: 700 20px/1 var(--mono);
+    }
+    .prototype-title strong { display: block; font-size: 15px; }
+    .prototype-title small { display: block; color: var(--muted); margin-top: 3px; font-size: 12px; }
+    .prototype-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+    .control-group {
+      display: flex; align-items: center; gap: 5px;
+      padding: 4px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2);
+    }
+    .control-group > span { color: var(--muted); font-size: 11px; padding: 0 7px; text-transform: uppercase; letter-spacing: .06em; }
+    .control-button {
+      border: 0; border-radius: 8px; background: transparent; padding: 8px 11px; cursor: pointer; font-size: 13px;
+    }
+    .control-button[aria-pressed="true"] { background: var(--surface); color: var(--accent); box-shadow: 0 1px 5px rgb(0 0 0 / 9%); font-weight: 700; }
+
+    .stage {
+      min-height: calc(100vh - 74px);
+      padding: 28px;
+      display: grid;
+      place-items: center;
+      overflow: auto;
+    }
+
+    .app-window {
+      width: min(1420px, 96vw);
+      height: min(850px, calc(100vh - 122px));
+      min-height: 650px;
+      background: var(--surface);
+      border: 1px solid color-mix(in srgb, var(--line) 80%, var(--text));
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      position: relative;
+      display: grid;
+      grid-template-rows: 42px 1fr;
+      transition: width .35s ease, height .35s ease, border-radius .25s ease;
+    }
+
+    .window-titlebar {
+      border-bottom: 1px solid var(--line);
+      background: var(--surface-2);
+      display: flex; align-items: center; justify-content: space-between;
+      padding-left: 14px; font-size: 12px; color: var(--muted);
+      user-select: none;
+    }
+    .window-name { display: flex; align-items: center; gap: 8px; }
+    .app-dot { width: 10px; height: 10px; background: var(--accent); border-radius: 50%; }
+    .window-actions { display: flex; align-self: stretch; }
+    .window-actions span { width: 46px; display: grid; place-items: center; font-family: Arial, sans-serif; }
+    .window-actions span:last-child:hover { background: var(--danger); color: white; }
+
+    .mobile-statusbar { display: none; }
+
+    .app-layout {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 232px minmax(330px, 430px) minmax(430px, 1fr);
+    }
+
+    .sidebar {
+      background: var(--surface-2);
+      border-right: 1px solid var(--line);
+      padding: calc(18px * var(--density)) 12px;
+      min-width: 0;
+      display: flex; flex-direction: column;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; padding: 0 8px 18px; }
+    .brand-icon {
+      width: 34px; height: 34px; border-radius: 10px; background: var(--accent); color: var(--accent-text);
+      display: grid; place-items: center; font-weight: 900;
+    }
+    .brand-text strong { font-size: 14px; display: block; }
+    .brand-text span { font-size: 11px; color: var(--muted); }
+
+    .nav-label { padding: 14px 11px 7px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; font-size: 10px; font-weight: 700; }
+    .nav-item {
+      width: 100%; border: 0; background: transparent; cursor: pointer;
+      min-height: calc(40px * var(--density)); padding: 8px 10px; border-radius: var(--radius-small);
+      display: flex; align-items: center; gap: 10px; text-align: left; color: var(--muted); font-size: 13px;
+    }
+    .nav-item:hover { background: var(--surface-3); color: var(--text); }
+    .nav-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+    .nav-icon { width: 20px; text-align: center; font-family: "Segoe UI Symbol", sans-serif; }
+    .nav-count { margin-left: auto; min-width: 22px; padding: 2px 6px; border-radius: 999px; text-align: center; background: var(--surface-3); font-size: 10px; }
+    .nav-item.active .nav-count { background: var(--surface); }
+    .sidebar-footer { margin-top: auto; }
+    .recent-favorites { margin-top: auto; border-top: 1px solid var(--line); padding-top: 8px; }
+    .favorite-link { min-height: 32px; font-size: 11px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .project-target.drag-over { background: var(--accent-soft); color: var(--accent); outline: 2px dashed var(--accent); }
+
+    .list-pane { border-right: 1px solid var(--line); min-width: 0; display: flex; flex-direction: column; background: var(--surface); }
+    .pane-header { padding: calc(18px * var(--density)); border-bottom: 1px solid var(--line); background: var(--surface); }
+    .title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    h1, h2, h3, p { margin-top: 0; }
+    .title-row h1 { font-size: 22px; margin: 0; letter-spacing: -.02em; }
+    .header-actions { display: flex; gap: 7px; }
+    .icon-button {
+      width: 38px; height: 38px; border: 1px solid var(--line); border-radius: var(--radius-small); background: var(--surface-2); cursor: pointer;
+      display: grid; place-items: center;
+    }
+    .icon-button:hover { border-color: var(--accent); color: var(--accent); }
+
+    .search {
+      margin-top: 14px; height: 40px; display: flex; align-items: center; gap: 9px;
+      border: 1px solid var(--line); border-radius: var(--radius-small); background: var(--surface-2); padding: 0 12px;
+    }
+    .search input { width: 100%; border: 0; outline: 0; color: var(--text); background: transparent; min-width: 0; }
+    .search input::placeholder { color: var(--muted); }
+    .filter-row { display: flex; gap: 7px; margin-top: 11px; overflow-x: auto; scrollbar-width: none; }
+    .widget-hint { display:none; margin-top:10px; padding:9px 11px; border:1px dashed var(--accent); border-radius:var(--radius-small); color:var(--accent); font-size:11px; background:var(--accent-soft); }
+    .chip {
+      border: 1px solid var(--line); background: var(--surface); color: var(--muted); border-radius: 999px; padding: 6px 10px;
+      font-size: 11px; white-space: nowrap; cursor: pointer;
+    }
+    .chip.active { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 38%, var(--line)); color: var(--accent); font-weight: 700; }
+
+    .notes-scroll { padding: calc(12px * var(--density)); overflow-y: auto; min-height: 0; }
+    .day-label { color: var(--muted); text-transform: uppercase; letter-spacing: .08em; font-size: 10px; font-weight: 800; padding: 9px 5px 7px; }
+    .note-card {
+      width: 100%; border: 1px solid transparent; background: transparent; color: inherit;
+      border-radius: var(--radius-small); padding: calc(13px * var(--density)); margin-bottom: 5px;
+      text-align: left; cursor: pointer; position: relative; display: block;
+    }
+    .note-card::before { content: ""; position: absolute; left: 0; top: 11px; bottom: 11px; width: 3px; border-radius: 4px; background: var(--type-color, var(--accent)); }
+    .note-card:hover { background: var(--surface-2); }
+    .note-card.selected { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 20%, var(--line)); }
+    .note-card.done { opacity: .58; filter: saturate(.55); }
+    .note-card.done h3 { text-decoration: line-through; }
+    .card-meta { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 10px; margin-left: 4px; }
+    .type-label { color: var(--type-color, var(--accent)); font-weight: 800; }
+    .card-time { margin-left: auto; }
+    .note-card h3 { font-size: 13px; margin: 8px 4px 5px; line-height: 1.25; }
+    .note-card p { margin: 0 4px 9px; color: var(--muted); font-size: 12px; line-height: 1.42; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .mini-tags { display: flex; gap: 5px; margin-left: 4px; }
+    .mini-tag { font-size: 9px; background: var(--surface-3); color: var(--muted); padding: 3px 6px; border-radius: 999px; }
+
+    .detail-pane { min-width: 0; display: flex; flex-direction: column; background: var(--surface); }
+    .detail-toolbar {
+      min-height: 58px; border-bottom: 1px solid var(--line); padding: 9px 18px;
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    }
+    .back-button { display: none; }
+    .save-state { font-size: 11px; color: var(--decision); display: flex; align-items: center; gap: 6px; }
+    .toolbar-buttons { display: flex; gap: 7px; }
+    .detail-scroll { overflow-y: auto; padding: clamp(22px, 4vw, 52px); min-height: 0; }
+    .detail-project { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; margin-bottom: 18px; }
+    .project-swatch { width: 9px; height: 9px; border-radius: 3px; background: #4e75db; }
+    .detail-type { color: var(--question); font-weight: 800; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+    .detail-scroll h2 { font-size: clamp(24px, 3vw, 36px); line-height: 1.14; letter-spacing: -.035em; margin: 12px 0 14px; max-width: 760px; }
+    .detail-tags { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 28px; }
+    .detail-body { font-size: 16px; line-height: 1.72; max-width: 800px; }
+    .detail-body p { margin-bottom: 16px; }
+    .check-row {
+      display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; margin: 8px 0;
+      border: 1px solid var(--line); border-radius: var(--radius-small); background: var(--surface-2);
+    }
+    .check-row input { margin-top: 4px; accent-color: var(--accent); }
+    .source-box { margin-top: 26px; border-left: 3px solid var(--line); padding: 8px 14px; color: var(--muted); font-size: 12px; }
+    .format-toolbar { display: flex; gap: 6px; margin: 0 0 16px; }
+    .inline-image { min-height: 150px; border: 1px solid var(--line); border-radius: var(--radius-small); background: linear-gradient(135deg,var(--surface-2),var(--surface-3)); display:grid; place-items:center; color:var(--muted); margin:16px 0; }
+
+    .floating-add {
+      position: absolute; right: 24px; bottom: 24px; z-index: 8;
+      width: 58px; height: 58px; border: 0; border-radius: 18px; background: var(--accent); color: var(--accent-text);
+      box-shadow: 0 12px 26px color-mix(in srgb, var(--accent) 35%, transparent); cursor: pointer; font-size: 26px;
+    }
+    .floating-add:hover { transform: translateY(-2px); }
+
+    .mobile-topbar, .bottom-nav { display: none; }
+
+    .capture-backdrop {
+      position: absolute; inset: 0; background: rgb(8 13 20 / 46%); z-index: 20;
+      display: none; align-items: center; justify-content: center; padding: 22px;
+    }
+    .capture-backdrop.open { display: flex; }
+    .capture-sheet {
+      width: min(620px, 100%); max-height: 88%; overflow-y: auto;
+      border-radius: calc(var(--radius) + 4px); background: var(--surface); box-shadow: 0 24px 90px rgb(0 0 0 / 35%);
+      border: 1px solid var(--line); padding: 22px;
+    }
+    .capture-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 17px; }
+    .capture-header h2 { margin: 0; font-size: 20px; }
+    .capture-meta { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 12px; }
+    .capture-editor {
+      width: 100%; min-height: 170px; resize: vertical; border: 1px solid var(--line); border-radius: var(--radius-small);
+      padding: 15px; color: var(--text); background: var(--surface-2); outline: 0; line-height: 1.5;
+    }
+    .capture-editor:focus { border-color: var(--accent); }
+    .partial-result { min-height: 28px; color: var(--accent); font-size: 12px; padding: 8px 3px 0; opacity: .9; }
+    .capture-actions { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; margin-top: 12px; }
+    .secondary-button, .primary-button {
+      min-height: 42px; border-radius: var(--radius-small); padding: 9px 15px; cursor: pointer;
+    }
+    .secondary-button { border: 1px solid var(--line); background: var(--surface-2); }
+    .primary-button { border: 1px solid var(--accent); background: var(--accent); color: var(--accent-text); font-weight: 800; }
+    .mic-button {
+      width: 70px; height: 70px; border-radius: 50%; border: 7px solid var(--accent-soft); background: var(--accent); color: var(--accent-text);
+      cursor: pointer; font-size: 26px; position: relative;
+    }
+    .mic-button.listening::after {
+      content: ""; position: absolute; inset: -12px; border: 2px solid var(--accent); border-radius: 50%; animation: pulse 1.25s infinite;
+    }
+    @keyframes pulse { from { transform: scale(.88); opacity: .9; } to { transform: scale(1.25); opacity: 0; } }
+    .mic-caption { text-align: center; font-size: 10px; color: var(--muted); margin-top: 6px; }
+    .autosave-hint { color: var(--decision); font-size: 11px; margin-top: 8px; }
+    .settings-grid { display:grid; gap:10px; }
+    .theme-option { display:flex; align-items:center; justify-content:space-between; width:100%; min-height:48px; padding:10px 12px; border:1px solid var(--line); border-radius:var(--radius-small); background:var(--surface-2); cursor:pointer; }
+    .project-tray { position:absolute; inset:auto 10px 78px; max-height:55%; overflow:auto; background:var(--surface); border:1px solid var(--line); border-radius:22px; box-shadow:var(--shadow); padding:12px; z-index:25; display:none; }
+    .project-tray.open { display:block; }
+    .project-tray h3 { margin:4px 6px 10px; }
+    .drop-project { width:100%; min-height:56px; display:flex; align-items:center; gap:12px; margin:6px 0; padding:10px 14px; border:1px solid var(--line); border-radius:14px; background:var(--surface-2); cursor:pointer; text-align:left; }
+
+    .toast {
+      position: absolute; left: 50%; bottom: 28px; transform: translate(-50%, 30px); opacity: 0; z-index: 30;
+      background: var(--text); color: var(--surface); padding: 10px 15px; border-radius: 999px; font-size: 12px;
+      transition: .22s ease; pointer-events: none;
+    }
+    .toast.show { transform: translate(-50%, 0); opacity: 1; }
+
+    /* Android меняет не только размер, но и паттерны навигации. */
+    body[data-platform="android"] .stage { padding: 18px; }
+    body[data-platform="android"] .app-window {
+      width: 390px; height: min(835px, calc(100vh - 112px)); min-height: 620px;
+      border-radius: 34px; grid-template-rows: 28px 1fr; border-width: 6px; border-color: #1c232d;
+    }
+    body[data-platform="android"] .window-titlebar { display: none; }
+    body[data-platform="android"] .mobile-statusbar {
+      display: flex; align-items: center; justify-content: space-between; padding: 0 17px; background: var(--surface); font: 700 10px/1 var(--font);
+    }
+    body[data-platform="android"] .phone-island { width: 64px; height: 16px; background: #1c232d; border-radius: 0 0 12px 12px; align-self: flex-start; }
+    body[data-platform="android"] .app-layout { display: block; position: relative; overflow: hidden; }
+    body[data-platform="android"] .sidebar { display: none; }
+    body[data-platform="android"] .list-pane { height: 100%; border: 0; padding-bottom: 70px; }
+    body[data-platform="android"] .pane-header { padding: 14px 16px 11px; }
+    body[data-platform="android"] .widget-hint { display:flex; align-items:center; justify-content:space-between; }
+    body[data-platform="android"] .title-row h1 { font-size: 24px; }
+    body[data-platform="android"] .header-actions .icon-button:first-child { display: none; }
+    body[data-platform="android"] .notes-scroll { padding: 7px 10px 88px; }
+    body[data-platform="android"] .note-card { padding: 13px 12px 13px 14px; margin-bottom: 5px; }
+    body[data-platform="android"] .note-card.selected { background: transparent; border-color: transparent; }
+    body[data-platform="android"] .note-card:active { background: var(--surface-2); }
+    body[data-platform="android"] .detail-pane {
+      position: absolute; inset: 0; z-index: 5; transform: translateX(100%); transition: transform .25s ease;
+    }
+    body[data-platform="android"] .app-layout.mobile-detail .detail-pane { transform: translateX(0); }
+    body[data-platform="android"] .detail-toolbar { min-height: 54px; padding: 7px 12px; }
+    body[data-platform="android"] .back-button { display: grid; }
+    body[data-platform="android"] .detail-scroll { padding: 24px 20px 90px; }
+    body[data-platform="android"] .detail-scroll h2 { font-size: 28px; }
+    body[data-platform="android"] .detail-body { font-size: 15px; line-height: 1.62; }
+    body[data-platform="android"] .floating-add { right: 20px; bottom: 79px; border-radius: 50%; }
+    body[data-platform="android"] .bottom-nav {
+      display: grid; grid-template-columns: repeat(4, 1fr); position: absolute; left: 0; right: 0; bottom: 0; height: 70px;
+      background: color-mix(in srgb, var(--surface) 94%, transparent); border-top: 1px solid var(--line); z-index: 7; backdrop-filter: blur(12px);
+    }
+    .bottom-nav button { border: 0; background: transparent; color: var(--muted); font-size: 9px; display: grid; place-content: center; gap: 4px; cursor: pointer; }
+    .bottom-nav button span { font-size: 18px; }
+    .bottom-nav button.active { color: var(--accent); font-weight: 800; }
+    body[data-platform="android"] .capture-backdrop { align-items: flex-end; padding: 0; }
+    body[data-platform="android"] .capture-sheet {
+      width: 100%; max-height: 92%; border-radius: 25px 25px 0 0; padding: 18px 18px 24px; border-left: 0; border-right: 0; border-bottom: 0;
+    }
+    body[data-platform="android"] .capture-sheet::before { content: ""; display: block; width: 42px; height: 4px; border-radius: 6px; background: var(--line); margin: -7px auto 15px; }
+    body[data-platform="android"] .capture-actions { grid-template-columns: 1fr auto 1fr; }
+    body[data-platform="android"] .toast { bottom: 82px; white-space: nowrap; }
+
+    body[data-theme="terminal"] .note-card.selected,
+    body[data-theme="terminal"] .nav-item.active { box-shadow: inset 3px 0 0 var(--accent); }
+    body[data-theme="terminal"] .brand-icon,
+    body[data-theme="terminal"] .prototype-mark { border-radius: 2px; }
+    body[data-theme="paper"] .detail-body { font-size: 17px; }
+    body[data-theme="paper"] .note-card h3 { font-size: 14px; }
+
+    @media (max-width: 900px) {
+      .prototype-toolbar { align-items: flex-start; }
+      .prototype-title small { display: none; }
+      .control-group > span { display: none; }
+      .control-button { padding: 8px; }
+    }
+    @media (max-width: 620px) {
+      .prototype-toolbar { position: static; display: block; padding: 12px; }
+      .prototype-title { margin-bottom: 10px; }
+      .prototype-controls { justify-content: flex-start; }
+      .stage { min-height: auto; padding: 10px !important; }
+      body[data-platform="windows"] .app-window { width: 1160px; transform-origin: top left; }
+    }
+  </style>
+</head>
+<body data-platform="windows" data-theme="studio" data-density="comfortable">
+  <header class="prototype-toolbar">
+    <div class="prototype-title">
+      <div class="prototype-mark">Ф</div>
+      <div>
+        <strong>Фиксатор — дизайн-прототип</strong>
+        <small>Автономный HTML · данные не сохраняются · микрофон не используется</small>
+      </div>
+    </div>
+
+    <div class="prototype-controls" aria-label="Настройки прототипа">
+      <div class="control-group" id="platformControls">
+        <span>Платформа</span>
+        <button class="control-button" data-platform-choice="windows" aria-pressed="true">Windows</button>
+        <button class="control-button" data-platform-choice="android" aria-pressed="false">Android</button>
+      </div>
+      <div class="control-group" id="themeControls">
+        <span>Предпросмотр</span>
+        <button class="control-button" data-theme-choice="studio" aria-pressed="true">Studio</button>
+        <button class="control-button" data-theme-choice="studio-night" aria-pressed="false">Studio Night</button>
+        <button class="control-button" data-theme-choice="paper" aria-pressed="false">Paper</button>
+        <button class="control-button" data-theme-choice="terminal" aria-pressed="false">Terminal</button>
+      </div>
+      <div class="control-group" id="densityControls">
+        <span>Плотность</span>
+        <button class="control-button" data-density-choice="comfortable" aria-pressed="true">Свободно</button>
+        <button class="control-button" data-density-choice="compact" aria-pressed="false">Плотно</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="stage">
+    <section class="app-window" aria-label="Прототип приложения">
+      <div class="window-titlebar">
+        <div class="window-name"><span class="app-dot"></span> Фиксатор · Мобильный банк</div>
+        <div class="window-actions" aria-hidden="true"><span>—</span><span>□</span><span>×</span></div>
+      </div>
+
+      <div class="mobile-statusbar" aria-hidden="true">
+        <span>10:42</span><span class="phone-island"></span><span>▮▮ 87%</span>
+      </div>
+
+      <div class="app-layout" id="appLayout">
+        <aside class="sidebar">
+          <div class="brand">
+            <div class="brand-icon">Ф</div>
+            <div class="brand-text"><strong>Фиксатор</strong><span>рабочие заметки</span></div>
+          </div>
+          <div class="nav-label">Заметки</div>
+          <button class="nav-item active"><span class="nav-icon">▤</span>Все заметки<span class="nav-count">34</span></button>
+          <button class="nav-item"><span class="nav-icon">◇</span>Без проекта<span class="nav-count">12</span></button>
+          <button class="nav-item"><span class="nav-icon">★</span>Избранное</button>
+          <div class="nav-label">Проекты</div>
+          <button class="nav-item project-target" data-project="Мобильный банк"><span class="nav-icon" style="color:#4e75db">●</span>Мобильный банк<span class="nav-count">18</span></button>
+          <button class="nav-item project-target" data-project="Личный кабинет"><span class="nav-icon" style="color:#8c65c5">●</span>Личный кабинет<span class="nav-count">7</span></button>
+          <button class="nav-item project-target" data-project="API интеграции"><span class="nav-icon" style="color:#d07b36">●</span>API интеграции<span class="nav-count">5</span></button>
+          <div class="recent-favorites">
+            <div class="nav-label">Недавнее избранное</div>
+            <button class="nav-item favorite-link"><span class="nav-icon">★</span>История изменения статуса</button>
+            <button class="nav-item favorite-link"><span class="nav-icon">★</span>Потеря черновика при звонке</button>
+            <button class="nav-item favorite-link"><span class="nav-icon">→</span>Все избранные</button>
+            <button class="nav-item" id="settingsButton"><span class="nav-icon">⚙</span>Настройки</button>
+          </div>
+        </aside>
+
+        <section class="list-pane" aria-label="Список заметок">
+          <header class="pane-header">
+            <div class="title-row">
+              <h1>Все заметки</h1>
+              <div class="header-actions">
+                <button class="icon-button" title="Сортировка" aria-label="Сортировка">⇅</button>
+                <button class="icon-button" id="filterButton" title="Фильтры" aria-label="Показать фильтры">⌁</button>
+              </div>
+            </div>
+            <label class="search">
+              <span aria-hidden="true">⌕</span>
+              <input id="searchInput" type="search" placeholder="Поиск по заметкам">
+              <kbd>Ctrl K</kbd>
+            </label>
+            <div class="filter-row" id="filterRow">
+              <button class="chip active">Все</button>
+              <button class="chip">Вопросы</button>
+              <button class="chip">Риски</button>
+              <button class="chip">В работе</button>
+              <button class="chip">Выполнено</button>
+              <button class="chip">С аудио</button>
+            </div>
+            <div class="widget-hint"><span>Виджет Android</span><span>＋ Текст&nbsp;&nbsp; ● Аудио</span></div>
+          </header>
+
+          <div class="notes-scroll" id="notesList">
+            <div class="day-label">Сегодня</div>
+            <button class="note-card selected" draggable="true" data-title="Нужно ли сохранять историю изменения статуса?" data-type="Вопрос" style="--type-color:var(--question)">
+              <span class="card-meta"><span class="type-label">? Вопрос</span><span>Мобильный банк</span><span class="card-time">10:28</span></span>
+              <h3>Нужно ли сохранять историю изменения статуса?</h3>
+              <p>Уточнить у владельца продукта, требуется ли аудит закрытия вопросов и рисков после встречи.</p>
+              <span class="mini-tags"><span class="mini-tag">#встреча</span><span class="mini-tag">#аудит</span></span>
+            </button>
+            <button class="note-card" draggable="true" data-title="Потеря черновика при входящем звонке" data-type="Риск" style="--type-color:var(--risk)">
+              <span class="card-meta"><span class="type-label">⚠ Риск</span><span>Android</span><span class="card-time">09:54</span></span>
+              <h3>Потеря черновика при входящем звонке</h3>
+              <p>Проверить lifecycle, audio focus и принудительное завершение процесса во время диктовки.</p>
+              <span class="mini-tags"><span class="mini-tag">#android</span><span class="mini-tag">#данные</span></span>
+            </button>
+            <button class="note-card done" draggable="true" data-title="Экспортировать вопросы нумерованным списком" data-type="Решение" style="--type-color:var(--decision)">
+              <span class="card-meta"><span class="type-label">✓ Решение</span><span>Общее</span><span class="card-time">09:16</span></span>
+              <h3>Экспортировать вопросы нумерованным списком</h3>
+              <p>Добавить шаблон «Скопировать как список», пригодный для письма заказчику.</p>
+              <span class="mini-tags"><span class="mini-tag">#экспорт</span></span>
+            </button>
+            <div class="day-label">Вчера</div>
+            <button class="note-card" draggable="true" data-title="Режим встречи: быстрый конвейер" data-type="Идея" style="--type-color:var(--idea)">
+              <span class="card-meta"><span class="type-label">◇ Идея</span><span>Общее</span><span class="card-time">18:41</span></span>
+              <h3>Режим встречи: быстрый конвейер</h3>
+              <p>После сохранения сразу открывать пустую карточку, сохраняя проект и язык диктовки.</p>
+              <span class="mini-tags"><span class="mini-tag">#сессия</span><span class="mini-tag">#ux</span></span>
+            </button>
+          </div>
+        </section>
+
+        <article class="detail-pane" aria-label="Открытая заметка">
+          <div class="detail-toolbar">
+            <button class="icon-button back-button" id="backButton" aria-label="Назад">←</button>
+            <span class="save-state"><span>●</span> Все изменения сохранены</span>
+            <div class="toolbar-buttons">
+              <button class="icon-button" title="Закрепить" aria-label="Закрепить">☆</button>
+              <button class="icon-button" title="Другие действия" aria-label="Другие действия">•••</button>
+            </div>
+          </div>
+          <div class="detail-scroll">
+            <div class="detail-project"><span class="project-swatch"></span> Мобильный банк <span>›</span> Встреча 16 июля</div>
+            <div class="detail-type" id="detailType">? Вопрос · В работе</div>
+            <h2 id="detailTitle">Нужно ли сохранять историю изменения статуса?</h2>
+            <div class="detail-tags"><button class="chip active">? Вопрос</button><button class="chip">#встреча</button><button class="chip">#аудит</button><button class="chip">+ тег</button><button class="chip">✓ Выполнить</button></div>
+            <div class="detail-body">
+              <div class="format-toolbar"><button class="chip"><b>B</b></button><button class="chip"><i>I</i></button><button class="chip"><s>S</s></button><button class="chip">☑ список</button><button class="chip">▧ изображение</button></div>
+              <p>Уточнить у владельца продукта, требуется ли хранить историю закрытия вопросов и рисков после встречи.</p>
+              <div class="inline-image">Inline-изображение внутри документа · asset_id</div>
+              <label class="check-row"><input type="checkbox"> <span>Определить срок хранения истории</span></label>
+              <label class="check-row"><input type="checkbox" checked> <span>Добавить ревизию заметки в модель данных</span></label>
+              <label class="check-row"><input type="checkbox"> <span>Проверить сценарий экспорта аудита</span></label>
+              <div class="source-box">▶ Исходное аудио сохранено · M4A · 34 секунды · local ASR RU</div>
+            </div>
+          </div>
+        </article>
+
+        <button class="floating-add" id="addButton" aria-label="Создать заметку" title="Создать заметку">＋</button>
+
+        <nav class="bottom-nav" aria-label="Основная навигация">
+          <button class="active"><span>▤</span>Все</button>
+          <button><span>◫</span>Проекты</button>
+          <button><span>★</span>Избранное</button>
+          <button><span>⌕</span>Поиск</button>
+        </nav>
+
+        <div class="capture-backdrop" id="captureBackdrop" role="dialog" aria-modal="true" aria-labelledby="captureTitle">
+          <section class="capture-sheet">
+            <header class="capture-header">
+              <h2 id="captureTitle">Быстрая заметка</h2>
+              <button class="icon-button" id="closeCapture" aria-label="Закрыть">×</button>
+            </header>
+            <div class="capture-meta">
+              <button class="chip">Без проекта ▾</button>
+              <button class="chip">? Вопрос</button>
+              <button class="chip">⚠ Риск</button>
+              <button class="chip">◇ Идея</button>
+              <button class="chip">RU</button>
+            </div>
+            <div class="format-toolbar"><button class="chip"><b>B</b></button><button class="chip"><i>I</i></button><button class="chip"><s>S</s></button><button class="chip">☑</button><button class="chip">▧</button></div>
+            <textarea class="capture-editor" id="captureEditor" placeholder="Текст, чек-лист или запись аудио…"></textarea>
+            <div class="autosave-hint">● Черновик сохраняется автоматически · проект и теги необязательны</div>
+            <div class="partial-result" id="partialResult" aria-live="polite"></div>
+            <div class="capture-actions">
+              <button class="secondary-button" id="cancelCapture">Отмена</button>
+              <div>
+                <button class="mic-button" id="micButton" aria-label="Начать демонстрацию диктовки">●</button>
+                <div class="mic-caption" id="micCaption">Диктовать</div>
+              </div>
+              <button class="primary-button" id="saveCapture">Готово</button>
+            </div>
+          </section>
+        </div>
+
+        <section class="project-tray" id="projectTray"><h3>Перетащите в проект</h3><button class="drop-project" data-project="Мобильный банк">● Мобильный банк</button><button class="drop-project" data-project="Личный кабинет">● Личный кабинет</button><button class="drop-project" data-project="API интеграции">● API интеграции</button><button class="drop-project" data-project="Исследования">● Исследования</button><button class="drop-project" data-project="Без проекта">◇ Без проекта</button></section>
+
+        <div class="capture-backdrop" id="settingsBackdrop" role="dialog" aria-modal="true" aria-labelledby="settingsTitle"><section class="capture-sheet"><header class="capture-header"><h2 id="settingsTitle">Настройки · Внешний вид</h2><button class="icon-button" id="closeSettings">×</button></header><div class="settings-grid"><button class="theme-option" data-settings-theme="studio"><span><b>Studio</b><br><small>Основная светлая тема</small></span><span>Светлая</span></button><button class="theme-option" data-settings-theme="studio-night"><span><b>Studio Night</b><br><small>Ночной вариант Studio</small></span><span>Тёмная</span></button><button class="theme-option" data-settings-theme="paper"><span><b>Paper</b><br><small>Тёплая редакционная</small></span><span>Альтернатива</span></button><button class="theme-option" data-settings-theme="terminal"><span><b>Terminal</b><br><small>Контрастная техническая</small></span><span>Альтернатива</span></button></div></section></div>
+
+        <div class="toast" id="toast" role="status">Заметка сохранена · Без проекта</div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      const body = document.body;
+      const appLayout = document.getElementById('appLayout');
+      const backdrop = document.getElementById('captureBackdrop');
+      const editor = document.getElementById('captureEditor');
+      const micButton = document.getElementById('micButton');
+      const micCaption = document.getElementById('micCaption');
+      const partial = document.getElementById('partialResult');
+      const toast = document.getElementById('toast');
+      const notesList = document.getElementById('notesList');
+      const settingsBackdrop = document.getElementById('settingsBackdrop');
+      const projectTray = document.getElementById('projectTray');
+      let listening = false;
+      let demoTimer = null;
+      let draggedCard = null;
+      let heldCard = null;
+      let holdTimer = null;
+
+      const showToast = message => {
+        toast.textContent = message;
+        toast.classList.add('show');
+        setTimeout(() => toast.classList.remove('show'), 2200);
+      };
+
+      const setChoice = (attribute, value, selector) => {
+        body.dataset[attribute] = value;
+        document.querySelectorAll(selector).forEach(button => {
+          const selected = button.dataset[`${attribute}Choice`] === value;
+          button.setAttribute('aria-pressed', String(selected));
+        });
+        if (attribute === 'platform') appLayout.classList.remove('mobile-detail');
+      };
+
+      document.querySelectorAll('[data-platform-choice]').forEach(button => {
+        button.addEventListener('click', () => setChoice('platform', button.dataset.platformChoice, '[data-platform-choice]'));
+      });
+      document.querySelectorAll('[data-theme-choice]').forEach(button => {
+        button.addEventListener('click', () => setChoice('theme', button.dataset.themeChoice, '[data-theme-choice]'));
+      });
+      document.querySelectorAll('[data-settings-theme]').forEach(button => {
+        button.addEventListener('click', () => {
+          setChoice('theme', button.dataset.settingsTheme, '[data-theme-choice]');
+          settingsBackdrop.classList.remove('open');
+          showToast(`Тема изменена: ${button.querySelector('b').textContent}`);
+        });
+      });
+      document.querySelectorAll('[data-density-choice]').forEach(button => {
+        button.addEventListener('click', () => setChoice('density', button.dataset.densityChoice, '[data-density-choice]'));
+      });
+
+      const openCapture = () => {
+        backdrop.classList.add('open');
+        setTimeout(() => editor.focus(), 30);
+      };
+      const stopListening = () => {
+        listening = false;
+        clearTimeout(demoTimer);
+        micButton.classList.remove('listening');
+        micButton.textContent = '●';
+        micCaption.textContent = 'Диктовать';
+        partial.textContent = '';
+      };
+      const closeCapture = () => {
+        stopListening();
+        backdrop.classList.remove('open');
+      };
+
+      document.getElementById('addButton').addEventListener('click', openCapture);
+      document.getElementById('closeCapture').addEventListener('click', closeCapture);
+      document.getElementById('cancelCapture').addEventListener('click', closeCapture);
+      backdrop.addEventListener('click', event => { if (event.target === backdrop) closeCapture(); });
+      document.getElementById('settingsButton').addEventListener('click', () => settingsBackdrop.classList.add('open'));
+      document.getElementById('closeSettings').addEventListener('click', () => settingsBackdrop.classList.remove('open'));
+      settingsBackdrop.addEventListener('click', event => { if (event.target === settingsBackdrop) settingsBackdrop.classList.remove('open'); });
+
+      micButton.addEventListener('click', () => {
+        if (listening) {
+          const result = partial.textContent.replace('Локальная расшифровка: «', '').replace('»', '');
+          editor.value += `${editor.value.trim() ? ' ' : ''}${result}`;
+          stopListening();
+          editor.focus();
+          return;
+        }
+        listening = true;
+        micButton.classList.add('listening');
+        micButton.textContent = '■';
+        micCaption.textContent = 'Остановить';
+        partial.textContent = 'Запись сохраняется локально…';
+        demoTimer = setTimeout(() => {
+          if (listening) partial.textContent = 'Локальная расшифровка: «Нужно уточнить поведение при потере сети»';
+        }, 850);
+      });
+
+      document.getElementById('saveCapture').addEventListener('click', () => {
+        if (!editor.value.trim()) {
+          editor.focus();
+          editor.placeholder = 'Сначала введите или надиктуйте текст';
+          return;
+        }
+        const text = editor.value.trim();
+        const card = document.createElement('button');
+        card.className = 'note-card';
+        card.draggable = true;
+        card.dataset.title = text;
+        card.dataset.type = 'Вопрос';
+        card.style.setProperty('--type-color', 'var(--question)');
+        card.innerHTML = `<span class="card-meta"><span class="type-label">Без тегов</span><span>Без проекта</span><span class="card-time">сейчас</span></span><h3></h3><p></p><span class="mini-tags"><span class="mini-tag">В работе</span></span>`;
+        card.querySelector('h3').textContent = text.slice(0, 74);
+        card.querySelector('p').textContent = text;
+        const firstCard = notesList.querySelector('.note-card');
+        notesList.insertBefore(card, firstCard);
+        bindCard(card);
+        editor.value = '';
+        closeCapture();
+        showToast('Заметка сохранена · Без проекта');
+      });
+
+      const bindCard = card => {
+        card.addEventListener('click', () => {
+          document.querySelectorAll('.note-card').forEach(item => item.classList.remove('selected'));
+          card.classList.add('selected');
+          document.getElementById('detailTitle').textContent = card.dataset.title;
+          document.getElementById('detailType').textContent = `${card.dataset.type} · ${card.classList.contains('done') ? 'Выполнено' : 'В работе'}`;
+          if (body.dataset.platform === 'android') appLayout.classList.add('mobile-detail');
+        });
+        card.addEventListener('dragstart', () => { draggedCard = card; });
+        card.addEventListener('dragend', () => { draggedCard = null; document.querySelectorAll('.drag-over').forEach(item => item.classList.remove('drag-over')); });
+        card.addEventListener('pointerdown', event => {
+          if (body.dataset.platform !== 'android') return;
+          heldCard = card;
+          holdTimer = setTimeout(() => { projectTray.classList.add('open'); if (navigator.vibrate) navigator.vibrate(25); }, 520);
+        });
+        ['pointerup','pointercancel'].forEach(name => card.addEventListener(name, () => clearTimeout(holdTimer)));
+      };
+      document.querySelectorAll('.note-card').forEach(bindCard);
+      document.getElementById('backButton').addEventListener('click', () => appLayout.classList.remove('mobile-detail'));
+
+      document.querySelectorAll('.filter-row .chip').forEach(chip => {
+        chip.addEventListener('click', () => {
+          document.querySelectorAll('.filter-row .chip').forEach(item => item.classList.remove('active'));
+          chip.classList.add('active');
+        });
+      });
+
+      document.getElementById('searchInput').addEventListener('input', event => {
+        const query = event.target.value.trim().toLocaleLowerCase('ru');
+        document.querySelectorAll('.note-card').forEach(card => {
+          card.hidden = query && !card.textContent.toLocaleLowerCase('ru').includes(query);
+        });
+      });
+
+      document.getElementById('filterButton').addEventListener('click', () => {
+        const row = document.getElementById('filterRow');
+        row.style.display = row.style.display === 'none' ? 'flex' : 'none';
+      });
+
+      document.querySelectorAll('.project-target').forEach(target => {
+        target.addEventListener('dragover', event => { event.preventDefault(); target.classList.add('drag-over'); });
+        target.addEventListener('dragleave', () => target.classList.remove('drag-over'));
+        target.addEventListener('drop', event => {
+          event.preventDefault(); target.classList.remove('drag-over');
+          if (draggedCard) showToast(`Перенесено в проект «${target.dataset.project}» · Отменить`);
+        });
+      });
+      document.querySelectorAll('.drop-project').forEach(target => target.addEventListener('click', () => {
+        projectTray.classList.remove('open');
+        if (heldCard) showToast(`Перенесено в «${target.dataset.project}» · Отменить`);
+        heldCard = null;
+      }));
+
+      document.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && backdrop.classList.contains('open')) closeCapture();
+        if (event.key === 'Escape') { settingsBackdrop.classList.remove('open'); projectTray.classList.remove('open'); }
+        if (event.ctrlKey && event.key.toLowerCase() === 'n') { event.preventDefault(); openCapture(); }
+        if (event.ctrlKey && event.key.toLowerCase() === 'k') { event.preventDefault(); document.getElementById('searchInput').focus(); }
+      });
+    })();
+  </script>
+</body>
+</html>
