@@ -4,7 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../application/drafts_service.dart';
 import '../application/notes_service.dart';
+import '../application/projects_service.dart';
+import '../application/tags_service.dart';
 import '../domain/clock.dart';
 import '../domain/id_generator.dart';
 import '../infrastructure/asr/sherpa_whisper_recognizer.dart';
@@ -36,16 +39,47 @@ final clockProvider = Provider<Clock>((ref) => const SystemClock());
 
 final idGeneratorProvider = Provider<IdGenerator>((ref) => const UuidV7Generator());
 
+final deviceIdProvider = FutureProvider<String>((ref) {
+  return DeviceIdentity.ensure(
+      ref.watch(databaseProvider), ref.watch(idGeneratorProvider));
+});
+
 final notesServiceProvider = FutureProvider<NotesService>((ref) async {
-  final db = ref.watch(databaseProvider);
-  final ids = ref.watch(idGeneratorProvider);
   return NotesService(
-    db: db,
+    db: ref.watch(databaseProvider),
     media: await ref.watch(mediaStoreProvider.future),
     recognizer:
         SherpaWhisperRecognizer(modelDir: ref.watch(asrModelDirProvider)),
     clock: ref.watch(clockProvider),
-    ids: ids,
-    deviceId: await DeviceIdentity.ensure(db, ids),
+    ids: ref.watch(idGeneratorProvider),
+    deviceId: await ref.watch(deviceIdProvider.future),
+  );
+});
+
+final projectsServiceProvider = FutureProvider<ProjectsService>((ref) async {
+  return ProjectsService(
+    db: ref.watch(databaseProvider),
+    clock: ref.watch(clockProvider),
+    ids: ref.watch(idGeneratorProvider),
+    deviceId: await ref.watch(deviceIdProvider.future),
+  );
+});
+
+/// Сидирует предустановленные глобальные теги при первом запуске.
+final tagsServiceProvider = FutureProvider<TagsService>((ref) async {
+  final service = TagsService(
+    db: ref.watch(databaseProvider),
+    clock: ref.watch(clockProvider),
+    ids: ref.watch(idGeneratorProvider),
+    deviceId: await ref.watch(deviceIdProvider.future),
+  );
+  await service.seedPresetsIfEmpty();
+  return service;
+});
+
+final draftsServiceProvider = Provider<DraftsService>((ref) {
+  return DraftsService(
+    db: ref.watch(databaseProvider),
+    clock: ref.watch(clockProvider),
   );
 });
