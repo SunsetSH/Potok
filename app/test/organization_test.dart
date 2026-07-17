@@ -36,7 +36,11 @@ void main() {
       deviceId: 'device-test',
     );
     projects = ProjectsService(
-        db: db, clock: clock, ids: ids, deviceId: 'device-test');
+      db: db,
+      clock: clock,
+      ids: ids,
+      deviceId: 'device-test',
+    );
     tags = TagsService(db: db, clock: clock, ids: ids, deviceId: 'device-test');
     drafts = DraftsService(db: db, clock: clock);
   });
@@ -50,33 +54,42 @@ void main() {
       (db.select(db.notes)..where((n) => n.id.equals(id))).getSingle();
 
   group('projects', () {
-    test('deleteProject moves live notes to «Без проекта» atomically',
-        () async {
-      final projectId = await projects.createProject(
-          name: 'Мобильный банк', colorArgb: 0xFF4E75DB);
-      final noteId = await notes.createTextNote('в проекте');
-      await notes.moveToProject(await noteById(noteId), projectId);
+    test(
+      'deleteProject moves live notes to «Без проекта» atomically',
+      () async {
+        final projectId = await projects.createProject(
+          name: 'Мобильный банк',
+          colorArgb: 0xFF4E75DB,
+        );
+        final noteId = await notes.createTextNote('в проекте');
+        await notes.moveToProject(await noteById(noteId), projectId);
 
-      final project = (await projects.watchProjects().first).single;
-      await projects.deleteProject(project);
+        final project = (await projects.watchProjects().first).single;
+        await projects.deleteProject(project);
 
-      expect(await projects.watchProjects().first, isEmpty);
-      final note = await noteById(noteId);
-      expect(note.projectId, isNull);
-      expect(note.deletedAtUtc, isNull, reason: 'заметка не уничтожается');
-      final events = await (db.select(db.noteEvents)
-            ..where((e) => e.noteId.equals(noteId)))
-          .get();
-      expect(events.map((e) => e.kind),
-          contains(NoteEventKind.movedToProject));
-    });
+        expect(await projects.watchProjects().first, isEmpty);
+        final note = await noteById(noteId);
+        expect(note.projectId, isNull);
+        expect(note.deletedAtUtc, isNull, reason: 'заметка не уничтожается');
+        final events = await (db.select(
+          db.noteEvents,
+        )..where((e) => e.noteId.equals(noteId))).get();
+        expect(
+          events.map((e) => e.kind),
+          contains(NoteEventKind.movedToProject),
+        );
+      },
+    );
 
     test('empty and overlong names rejected', () async {
-      expect(() => projects.createProject(name: '  ', colorArgb: 0),
-          throwsArgumentError);
       expect(
-          () => projects.createProject(name: 'x' * 121, colorArgb: 0),
-          throwsArgumentError);
+        () => projects.createProject(name: '  ', colorArgb: 0),
+        throwsArgumentError,
+      );
+      expect(
+        () => projects.createProject(name: 'x' * 121, colorArgb: 0),
+        throwsArgumentError,
+      );
     });
   });
 
@@ -89,14 +102,15 @@ void main() {
       expect(all.every((t) => t.scope == TagScope.global), isTrue);
     });
 
-    test('project tag cannot be assigned to note of another project',
-        () async {
+    test('project tag cannot be assigned to note of another project', () async {
       final projectA = await projects.createProject(name: 'A', colorArgb: 0);
-      final tagId =
-          await tags.createTag(name: 'срочно', colorArgb: 0, projectId: projectA);
+      final tagId = await tags.createTag(
+        name: 'срочно',
+        colorArgb: 0,
+        projectId: projectA,
+      );
       final noteId = await notes.createTextNote('без проекта');
-      await expectLater(
-          tags.assignTag(noteId, tagId), throwsStateError);
+      await expectLater(tags.assignTag(noteId, tagId), throwsStateError);
     });
 
     test('assign is idempotent and writes tagsChanged once', () async {
@@ -104,13 +118,35 @@ void main() {
       final noteId = await notes.createTextNote('x');
       await tags.assignTag(noteId, tagId);
       await tags.assignTag(noteId, tagId);
-      final events = await (db.select(db.noteEvents)
-            ..where((e) =>
-                e.noteId.equals(noteId) &
-                e.kind.equalsValue(NoteEventKind.tagsChanged)))
-          .get();
+      final events =
+          await (db.select(db.noteEvents)..where(
+                (e) =>
+                    e.noteId.equals(noteId) &
+                    e.kind.equalsValue(NoteEventKind.tagsChanged),
+              ))
+              .get();
       expect(events, hasLength(1));
       expect(await tags.watchNoteTags(noteId).first, hasLength(1));
+    });
+
+    test('bulk tag assignment is atomic and bumps note revisions', () async {
+      final tagId = await tags.createTag(name: 'массовый', colorArgb: 0);
+      final firstId = await notes.createTextNote('a');
+      final secondId = await notes.createTextNote('b');
+      var selection = [await noteById(firstId), await noteById(secondId)];
+      await (db.update(db.notes)..where((row) => row.id.equals(secondId)))
+          .write(const NotesCompanion(revision: Value(2)));
+
+      await expectLater(tags.bulkAssignTag(selection, tagId), throwsStateError);
+      expect(await db.select(db.noteTags).get(), isEmpty);
+
+      await (db.update(db.notes)..where((row) => row.id.equals(secondId)))
+          .write(const NotesCompanion(revision: Value(1)));
+      selection = [await noteById(firstId), await noteById(secondId)];
+      await tags.bulkAssignTag(selection, tagId);
+      expect(await db.select(db.noteTags).get(), hasLength(2));
+      expect((await noteById(firstId)).revision, 2);
+      expect((await noteById(secondId)).revision, 2);
     });
   });
 
@@ -121,7 +157,10 @@ void main() {
       final noteId = await notes.createTextNote('x');
       await notes.moveToProject(await noteById(noteId), projectA);
       final tagId = await tags.createTag(
-          name: 'заказчик', colorArgb: 0, projectId: projectA);
+        name: 'заказчик',
+        colorArgb: 0,
+        projectId: projectA,
+      );
       await tags.assignTag(noteId, tagId);
 
       await notes.moveToProject(await noteById(noteId), projectB);
@@ -135,11 +174,17 @@ void main() {
       final noteId = await notes.createTextNote('x');
       await notes.moveToProject(await noteById(noteId), projectA);
       final tagId = await tags.createTag(
-          name: 'заказчик', colorArgb: 0, projectId: projectA);
+        name: 'заказчик',
+        colorArgb: 0,
+        projectId: projectA,
+      );
       await tags.assignTag(noteId, tagId);
 
-      await notes.moveToProject(await noteById(noteId), null,
-          resolution: ProjectTagResolution.convertToGlobal);
+      await notes.moveToProject(
+        await noteById(noteId),
+        null,
+        resolution: ProjectTagResolution.convertToGlobal,
+      );
 
       final remaining = await tags.watchNoteTags(noteId).first;
       expect(remaining.single.scope, TagScope.global);
@@ -165,12 +210,13 @@ void main() {
 
       await notes.restoreFromTrash(await noteById(noteId));
       expect((await notes.watchNotes().first).single.id, noteId);
-      final kinds = (await (db.select(db.noteEvents)
-                ..where((e) => e.noteId.equals(noteId)))
-              .get())
-          .map((e) => e.kind);
-      expect(kinds,
-          containsAll([NoteEventKind.deleted, NoteEventKind.restored]));
+      final kinds = (await (db.select(
+        db.noteEvents,
+      )..where((e) => e.noteId.equals(noteId))).get()).map((e) => e.kind);
+      expect(
+        kinds,
+        containsAll([NoteEventKind.deleted, NoteEventKind.restored]),
+      );
     });
   });
 
@@ -183,8 +229,10 @@ void main() {
       await drafts.save('quick-capture', documentJson: doc2);
 
       final restored = await drafts.load('quick-capture');
-      expect(PotokDocument.decode(restored!.documentJson).plainText,
-          'черновик 2');
+      expect(
+        PotokDocument.decode(restored!.documentJson).plainText,
+        'черновик 2',
+      );
 
       await drafts.clear('quick-capture');
       await drafts.clear('quick-capture'); // идемпотентно
@@ -193,18 +241,22 @@ void main() {
   });
 
   group('document editing', () {
-    test('updateDocument bumps revision, refreshes projection and FTS',
-        () async {
-      final noteId = await notes.createTextNote('старый текст');
-      final note = await noteById(noteId);
-      await notes.updateDocument(
-          note, PotokDocument.fromPlainText('новейший текст'));
-      final updated = await noteById(noteId);
-      expect(updated.documentPlainText, 'новейший текст');
-      expect(updated.revision, 2);
-      expect(await notes.searchNotes('новейш'), hasLength(1));
-      expect(await notes.searchNotes('стар'), isEmpty);
-    });
+    test(
+      'updateDocument bumps revision, refreshes projection and FTS',
+      () async {
+        final noteId = await notes.createTextNote('старый текст');
+        final note = await noteById(noteId);
+        await notes.updateDocument(
+          note,
+          PotokDocument.fromPlainText('новейший текст'),
+        );
+        final updated = await noteById(noteId);
+        expect(updated.documentPlainText, 'новейший текст');
+        expect(updated.revision, 2);
+        expect(await notes.searchNotes('новейш'), hasLength(1));
+        expect(await notes.searchNotes('стар'), isEmpty);
+      },
+    );
 
     test('stale update fails and leaves document intact', () async {
       final noteId = await notes.createTextNote('текст');

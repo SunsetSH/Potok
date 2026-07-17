@@ -12,10 +12,31 @@ class MediaStore {
   MediaStore(this.root);
 
   /// Shard by the first two id chars to keep directories small.
-  String relativePathFor(String assetId, String extension) =>
-      p.join(assetId.substring(0, 2), '$assetId.$extension');
+  String relativePathFor(String assetId, String extension) {
+    if (!RegExp(r'^[A-Za-z0-9_-]{3,128}$').hasMatch(assetId)) {
+      throw ArgumentError.value(assetId, 'assetId', 'unsafe media id');
+    }
+    if (!RegExp(r'^[A-Za-z0-9]{1,10}$').hasMatch(extension)) {
+      throw ArgumentError.value(extension, 'extension', 'unsafe extension');
+    }
+    return p.join(assetId.substring(0, 2), '$assetId.$extension');
+  }
 
-  String absolutePath(String relativePath) => p.join(root.path, relativePath);
+  String absolutePath(String relativePath) {
+    if (relativePath.isEmpty || p.isAbsolute(relativePath)) {
+      throw ArgumentError.value(relativePath, 'relativePath', 'unsafe path');
+    }
+    final rootPath = p.normalize(p.absolute(root.path));
+    final result = p.normalize(p.join(rootPath, relativePath));
+    if (!p.isWithin(rootPath, result)) {
+      throw ArgumentError.value(
+        relativePath,
+        'relativePath',
+        'path escapes root',
+      );
+    }
+    return result;
+  }
 
   /// Path the recorder writes to. Lives next to the final file (same volume)
   /// so the final step is an atomic rename.
@@ -23,12 +44,27 @@ class MediaStore {
       '${absolutePath(relativePath)}.partial';
 
   Future<void> prepareStaging(String relativePath) async {
-    await Directory(p.dirname(absolutePath(relativePath))).create(recursive: true);
+    await Directory(
+      p.dirname(absolutePath(relativePath)),
+    ).create(recursive: true);
   }
 
   /// Validates and promotes a staged file. Returns (sizeBytes, sha256hex).
   /// Throws [MediaFinalizeException] if the staged file is missing or empty.
-  Future<({int sizeBytes, String sha256hex})> finalize(String relativePath) async {
+  Future<({int sizeBytes, String sha256hex})> finalize(String relativePath) =>
+      _finalize(relativePath, validateAudio: false);
+
+  /// Audio promotion additionally verifies the container signature. This does
+  /// not decode the stream, but rejects truncated/wrong-format output before a
+  /// note can become visible.
+  Future<({int sizeBytes, String sha256hex})> finalizeAudio(
+    String relativePath,
+  ) => _finalize(relativePath, validateAudio: true);
+
+  Future<({int sizeBytes, String sha256hex})> _finalize(
+    String relativePath, {
+    required bool validateAudio,
+  }) async {
     final partial = File(stagingPath(relativePath));
     if (!partial.existsSync()) {
       throw const MediaFinalizeException('staged file missing');
@@ -37,16 +73,85 @@ class MediaStore {
     if (size <= 0) {
       throw const MediaFinalizeException('staged file is empty');
     }
+    if (validateAudio &&
+        !await _hasExpectedAudioSignature(
+          partial,
+          extension: p.extension(relativePath),
+        )) {
+      throw const MediaFinalizeException('invalid audio container');
+    }
     final digest = await sha256.bind(partial.openRead()).first;
     final target = File(absolutePath(relativePath));
     await partial.rename(target.path);
     return (sizeBytes: size, sha256hex: digest.toString());
   }
 
+  /// Checks a published file and returns its current integrity metadata.
+  /// Missing files return null; invalid/truncated files throw.
+  Future<({int sizeBytes, String sha256hex})?> inspect(
+    String relativePath, {
+    bool validateAudio = false,
+  }) async {
+    final file = File(absolutePath(relativePath));
+    if (!file.existsSync()) return null;
+    final size = file.lengthSync();
+    if (size <= 0) {
+      throw const MediaFinalizeException('published file is empty');
+    }
+    if (validateAudio &&
+        !await _hasExpectedAudioSignature(
+          file,
+          extension: p.extension(relativePath),
+        )) {
+      throw const MediaFinalizeException('invalid audio container');
+    }
+    final digest = await sha256.bind(file.openRead()).first;
+    return (sizeBytes: size, sha256hex: digest.toString());
+  }
+
+  Future<bool> _hasExpectedAudioSignature(
+    File file, {
+    required String extension,
+  }) async {
+    extension = extension.toLowerCase();
+    final handle = await file.open();
+    try {
+      final header = await handle.read(12);
+      if (header.length < 12) return false;
+      if (extension == '.m4a') {
+        return header[4] == 0x66 &&
+            header[5] == 0x74 &&
+            header[6] == 0x79 &&
+            header[7] == 0x70;
+      }
+      if (extension == '.wav') {
+        return header[0] == 0x52 &&
+            header[1] == 0x49 &&
+            header[2] == 0x46 &&
+            header[3] == 0x46 &&
+            header[8] == 0x57 &&
+            header[9] == 0x41 &&
+            header[10] == 0x56 &&
+            header[11] == 0x45;
+      }
+      return false;
+    } finally {
+      await handle.close();
+    }
+  }
+
   /// Idempotent cleanup for failed/cancelled recordings.
   Future<void> discardStaging(String relativePath) async {
     final partial = File(stagingPath(relativePath));
     if (partial.existsSync()) await partial.delete();
+  }
+
+  /// Idempotent cleanup after the DB row has entered `deleted` lifecycle.
+  /// Both names are checked because recovery may run at any crash point.
+  Future<void> discard(String relativePath) async {
+    await discardStaging(relativePath);
+    final finalFile = File(absolutePath(relativePath));
+    if (finalFile.existsSync()) await finalFile.delete();
   }
 }
 

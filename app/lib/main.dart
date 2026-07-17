@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_quill/flutter_quill.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'presentation/app_shell.dart';
@@ -17,13 +18,14 @@ class PotokApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     // Пока настройка не прочитана — Studio Light (дефолт ТЗ 0.6.6).
-    final themeId =
-        ref.watch(themeIdProvider).value ?? PotokThemeId.studio;
+    final themeId = ref.watch(themeIdProvider).value ?? PotokThemeId.studio;
     return MaterialApp(
       title: 'Поток',
       debugShowCheckedModeBanner: false,
       navigatorKey: appNavigatorKey,
       theme: buildPotokTheme(themeId),
+      localizationsDelegates: FlutterQuillLocalizations.localizationsDelegates,
+      supportedLocales: const [Locale('ru'), Locale('en')],
       builder: (context, child) =>
           _GlobalShortcuts(child: child ?? const SizedBox.shrink()),
       home: const AppShell(),

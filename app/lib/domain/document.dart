@@ -25,6 +25,12 @@ class PotokDocument {
     ]);
   }
 
+  /// Строит документ из Quill Delta ops (`Document.toDelta().toJson()`).
+  /// Ops копируются: последующие правки редактора не меняют снимок.
+  factory PotokDocument.fromDeltaOps(List<Map<String, Object?>> ops) {
+    return PotokDocument._(ops.map(_copyJsonObject).toList(growable: false));
+  }
+
   factory PotokDocument.decode(String documentJson) {
     final raw = jsonDecode(documentJson);
     if (raw is! Map<String, Object?>) {
@@ -42,20 +48,33 @@ class PotokDocument {
     if (ops is! List) {
       throw const FormatException('document delta.ops missing');
     }
+    if (ops.any((op) => op is! Map<String, Object?>)) {
+      throw const FormatException('document delta.ops must contain objects');
+    }
     return PotokDocument._(
-      ops.whereType<Map<String, Object?>>().toList(growable: false),
+      ops
+          .cast<Map<String, Object?>>()
+          .map(_copyJsonObject)
+          .toList(growable: false),
     );
   }
 
   String encode() => jsonEncode({
-        'schema': schemaName,
-        'version': currentVersion,
-        'format': deltaFormat,
-        'delta': {'ops': ops},
-      });
+    'schema': schemaName,
+    'version': currentVersion,
+    'format': deltaFormat,
+    'delta': {'ops': ops},
+  });
 
-  /// Deterministic plain-text projection: concatenated string inserts;
-  /// embeds (image/audio) contribute nothing.
+  /// Ops в формате, который принимает Quill `Document.fromJson`.
+  /// Копия: правки Quill-документа не мутируют снимок.
+  List<Map<String, Object?>> get deltaOps =>
+      ops.map(_copyJsonObject).toList(growable: false);
+
+  /// Deterministic plain-text projection (FTS, card preview): concatenated
+  /// string inserts. Checklist-строки — обычный текст (атрибуты строки живут
+  /// на '\n' и на проекцию не влияют); embeds (image/audio) contribute
+  /// nothing.
   String get plainText {
     final buffer = StringBuffer();
     for (final op in ops) {
@@ -66,6 +85,25 @@ class PotokDocument {
   }
 
   bool get isEmpty => plainText.isEmpty;
+
+  /// Managed media referenced by image/audio embeds. Unknown schemes and
+  /// malformed values are ignored; callers never interpret them as paths.
+  Set<String> get managedAssetIds {
+    final result = <String>{};
+    for (final op in ops) {
+      final insert = op['insert'];
+      if (insert is! Map<String, Object?>) continue;
+      for (final kind in const ['image', 'audio']) {
+        final value = insert[kind];
+        if (value is! String || !value.startsWith('asset://')) continue;
+        final id = value.substring('asset://'.length);
+        if (id.isNotEmpty && !id.contains(RegExp(r'[/\\?#]'))) {
+          result.add(id);
+        }
+      }
+    }
+    return Set.unmodifiable(result);
+  }
 
   /// Returns a new document with [text] appended as its own paragraph.
   /// Used when a transcript revision is explicitly accepted (FR-ASR-004);
@@ -79,3 +117,12 @@ class PotokDocument {
     ]);
   }
 }
+
+Map<String, Object?> _copyJsonObject(Map<String, Object?> source) =>
+    source.map((key, value) => MapEntry(key, _copyJsonValue(value)));
+
+Object? _copyJsonValue(Object? value) => switch (value) {
+  final Map<String, Object?> map => _copyJsonObject(map),
+  final List<Object?> list => list.map(_copyJsonValue).toList(growable: false),
+  _ => value,
+};

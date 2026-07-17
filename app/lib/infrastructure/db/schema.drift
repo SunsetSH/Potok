@@ -7,6 +7,19 @@ CREATE INDEX idx_note_tags_tag ON note_tags (tag_id, note_id);
 CREATE INDEX idx_media_owner ON media_assets (owner_note_id, deleted_at_utc);
 CREATE INDEX idx_note_events_note ON note_events (note_id, occurred_at_utc DESC);
 CREATE INDEX idx_transcripts_asset ON transcript_revisions (audio_asset_id, created_at_utc DESC);
+CREATE INDEX idx_notes_session ON notes (session_id, created_at_utc ASC);
+CREATE INDEX idx_notes_live_created ON notes
+  (deleted_at_utc, created_at_utc DESC, id DESC);
+CREATE INDEX idx_notes_live_updated ON notes
+  (deleted_at_utc, updated_at_utc DESC, id DESC);
+CREATE INDEX idx_notes_live_event ON notes
+  (deleted_at_utc, COALESCE(event_at_utc, created_at_utc) DESC, id DESC);
+CREATE INDEX idx_notes_live_title ON notes
+  (deleted_at_utc, document_plain_text COLLATE NOCASE, id);
+CREATE INDEX idx_notes_trash_deleted ON notes (deleted_at_utc DESC, id DESC)
+  WHERE deleted_at_utc IS NOT NULL;
+CREATE UNIQUE INDEX idx_sessions_single_open ON sessions ((1))
+  WHERE state IN ('active', 'paused') AND deleted_at_utc IS NULL;
 
 -- Уникальность имён тегов: отдельно для global и внутри проекта (ТЗ 0.7.3),
 -- только среди живых записей.
@@ -19,7 +32,7 @@ CREATE UNIQUE INDEX idx_tags_project_name ON tags (project_id, normalized_name)
 -- plain text при принятии. Токенизатор: unicode61, диакритика снимается.
 CREATE VIRTUAL TABLE notes_fts USING fts5(
   title,
-  plain_text,
+  document_plain_text,
   content='notes',
   content_rowid='rowid',
   tokenize='unicode61 remove_diacritics 2'
@@ -27,19 +40,19 @@ CREATE VIRTUAL TABLE notes_fts USING fts5(
 
 -- Триггеры синхронизации external-content FTS (стандартный паттерн SQLite).
 CREATE TRIGGER notes_fts_insert AFTER INSERT ON notes BEGIN
-  INSERT INTO notes_fts (rowid, title, plain_text)
+  INSERT INTO notes_fts (rowid, title, document_plain_text)
   VALUES (new.rowid, coalesce(new.title, ''), new.document_plain_text);
 END;
 
 CREATE TRIGGER notes_fts_delete AFTER DELETE ON notes BEGIN
-  INSERT INTO notes_fts (notes_fts, rowid, title, plain_text)
+  INSERT INTO notes_fts (notes_fts, rowid, title, document_plain_text)
   VALUES ('delete', old.rowid, coalesce(old.title, ''), old.document_plain_text);
 END;
 
 CREATE TRIGGER notes_fts_update AFTER UPDATE ON notes BEGIN
-  INSERT INTO notes_fts (notes_fts, rowid, title, plain_text)
+  INSERT INTO notes_fts (notes_fts, rowid, title, document_plain_text)
   VALUES ('delete', old.rowid, coalesce(old.title, ''), old.document_plain_text);
-  INSERT INTO notes_fts (rowid, title, plain_text)
+  INSERT INTO notes_fts (rowid, title, document_plain_text)
   VALUES (new.rowid, coalesce(new.title, ''), new.document_plain_text);
 END;
 
@@ -49,4 +62,17 @@ SELECT n.** FROM notes AS n
 INNER JOIN notes_fts AS f ON f.rowid = n.rowid
 WHERE notes_fts MATCH :query AND n.deleted_at_utc IS NULL
 ORDER BY bm25(notes_fts), n.id DESC
+LIMIT :limitRows;
+
+searchNotesByMetadata:
+SELECT DISTINCT n.** FROM notes AS n
+LEFT JOIN projects AS p ON p.id = n.project_id AND p.deleted_at_utc IS NULL
+LEFT JOIN note_tags AS nt ON nt.note_id = n.id
+LEFT JOIN tags AS t ON t.id = nt.tag_id AND t.deleted_at_utc IS NULL
+WHERE n.deleted_at_utc IS NULL
+  AND (
+    p.name LIKE :pattern ESCAPE '\' COLLATE NOCASE
+    OR t.name LIKE :pattern ESCAPE '\' COLLATE NOCASE
+  )
+ORDER BY n.updated_at_utc DESC, n.id DESC
 LIMIT :limitRows;

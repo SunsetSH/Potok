@@ -1,0 +1,224 @@
+import 'dart:io';
+
+import 'package:drift/native.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_quill/flutter_quill.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:potok/application/notes_service.dart';
+import 'package:potok/domain/clock.dart';
+import 'package:potok/domain/document.dart';
+import 'package:potok/domain/id_generator.dart';
+import 'package:potok/domain/types.dart';
+import 'package:potok/infrastructure/audio_player_controller.dart';
+import 'package:potok/infrastructure/db/database.dart';
+import 'package:potok/infrastructure/media_store.dart';
+import 'package:potok/presentation/note_detail_pane.dart';
+import 'package:potok/presentation/providers.dart';
+import 'package:potok/presentation/theme.dart';
+
+void main() {
+  late AppDatabase db;
+  late Directory temp;
+  late NotesService notes;
+  late Note note;
+
+  setUp(() async {
+    db = AppDatabase(NativeDatabase.memory());
+    temp = await Directory.systemTemp.createTemp('potok_detail_widget_test');
+    notes = NotesService(
+      db: db,
+      media: MediaStore(temp),
+      clock: FixedClock(DateTime.utc(2026, 7, 17, 12)),
+      ids: SequentialIdGenerator(),
+      deviceId: 'device-test',
+    );
+    final id = await notes.createTextNote('Проверить сценарий');
+    note = await (db.select(
+      db.notes,
+    )..where((row) => row.id.equals(id))).getSingle();
+  });
+
+  tearDown(() async {
+    await db.close();
+    await temp.delete(recursive: true);
+  });
+
+  Widget detail(
+    Note selected, {
+    MediaAsset? audioAsset,
+    AudioPlaybackController Function()? playerFactory,
+  }) => ProviderScope(
+    overrides: [
+      notesServiceProvider.overrideWithValue(AsyncData(notes)),
+      selectedNoteProvider.overrideWith((ref) => selected),
+      projectsProvider.overrideWith((ref) => Stream.value(const [])),
+      noteTagsProvider.overrideWith((ref, id) => Stream.value(const [])),
+      availableTagsProvider.overrideWith((ref, id) => Stream.value(const [])),
+      audioAssetsProvider.overrideWith(
+        (ref, id) => Stream.value(
+          audioAsset == null ? const <MediaAsset>[] : [audioAsset],
+        ),
+      ),
+      revisionsProvider.overrideWith((ref, id) => Stream.value(const [])),
+      mediaStoreProvider.overrideWithValue(AsyncData(MediaStore(temp))),
+      if (playerFactory != null)
+        audioPlaybackControllerFactoryProvider.overrideWithValue(playerFactory),
+    ],
+    child: MaterialApp(
+      theme: buildPotokTheme(PotokThemeId.studio),
+      localizationsDelegates: FlutterQuillLocalizations.localizationsDelegates,
+      supportedLocales: const [Locale('ru'), Locale('en')],
+      home: const Scaffold(body: NoteDetailPane()),
+    ),
+  );
+
+  testWidgets('rich local edit and checklist are saved in one revision', (
+    tester,
+  ) async {
+    await tester.pumpWidget(detail(note));
+    await tester.pumpAndSettle();
+    final editor = tester.widget<QuillEditor>(find.byType(QuillEditor));
+    final controller = editor.controller;
+
+    controller.replaceText(
+      0,
+      0,
+      'Важно: ',
+      const TextSelection.collapsed(offset: 7),
+    );
+    controller.formatText(0, 6, Attribute.bold);
+    controller.formatText(0, controller.document.length, Attribute.unchecked);
+    await tester.pump(const Duration(milliseconds: 550));
+    await tester.pumpAndSettle();
+
+    final saved = await (db.select(
+      db.notes,
+    )..where((row) => row.id.equals(note.id))).getSingle();
+    final document = PotokDocument.decode(saved.documentJson);
+    expect(saved.revision, note.revision + 1);
+    expect(saved.documentPlainText, startsWith('Важно: Проверить сценарий'));
+    expect(
+      document.deltaOps,
+      contains(
+        predicate<Map<String, Object?>>((op) {
+          final attributes = op['attributes'];
+          return attributes is Map<String, Object?> &&
+              attributes['list'] == 'unchecked';
+        }),
+      ),
+    );
+    expect(
+      document.deltaOps,
+      contains(
+        predicate<Map<String, Object?>>((op) {
+          final attributes = op['attributes'];
+          return attributes is Map<String, Object?> &&
+              attributes['bold'] == true;
+        }),
+      ),
+    );
+  });
+
+  testWidgets('malformed canonical document degrades to empty editor', (
+    tester,
+  ) async {
+    final malformed = note.copyWith(documentJson: '{broken');
+
+    await tester.pumpWidget(detail(malformed));
+    await tester.pumpAndSettle();
+
+    final editor = tester.widget<QuillEditor>(find.byType(QuillEditor));
+    expect(editor.controller.document.toPlainText(), '\n');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('audio controls expose play, seek and allowlisted speed', (
+    tester,
+  ) async {
+    final fake = _FakeAudioPlaybackController();
+    final audioNote = note.copyWith(sourceKind: SourceKind.audio);
+    final asset = MediaAsset(
+      id: 'audio-1',
+      ownerNoteId: note.id,
+      kind: AssetKind.audio,
+      relativePath: 'au/audio-1.m4a',
+      mimeType: 'audio/mp4',
+      sizeBytes: 1024,
+      sha256: 'hash',
+      lifecycleState: AssetLifecycle.ready,
+      createdAtUtc: 1,
+      updatedAtUtc: 1,
+    );
+
+    await tester.pumpWidget(
+      detail(audioNote, audioAsset: asset, playerFactory: () => fake),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      fake.openedPath!.replaceAll('\\', '/'),
+      endsWith('/au/audio-1.m4a'),
+    );
+    await tester.tap(find.byKey(const ValueKey('audio-play-audio-1')));
+    expect(fake.state.playing, isTrue);
+    await tester.tap(find.byKey(const ValueKey('audio-forward-audio-1')));
+    expect(fake.state.position, const Duration(seconds: 10));
+
+    await tester.tap(find.byKey(const ValueKey('audio-speed-audio-1')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('1.5×').last);
+    await tester.pump();
+    expect(fake.state.speed, 1.5);
+    await tester.tap(find.byKey(const ValueKey('audio-manual-audio-1')));
+    await tester.pump();
+    expect(fake.state.playing, isFalse);
+    final progress = find.byKey(const ValueKey('audio-progress-audio-1'));
+    expect(progress, findsOneWidget);
+    expect(
+      find.ancestor(of: progress, matching: find.byType(Semantics)),
+      findsWidgets,
+    );
+  });
+}
+
+class _FakeAudioPlaybackController extends AudioPlaybackController {
+  AudioPlaybackState _state = const AudioPlaybackState(
+    loading: false,
+    duration: Duration(minutes: 1),
+  );
+  String? openedPath;
+
+  @override
+  AudioPlaybackState get state => _state;
+
+  @override
+  Future<void> open(String path) async => openedPath = path;
+
+  @override
+  Future<void> seek(Duration position) async {
+    _state = _state.copyWith(position: position);
+    notifyListeners();
+  }
+
+  @override
+  Future<void> setSpeed(double speed) async {
+    _state = _state.copyWith(speed: speed);
+    notifyListeners();
+  }
+
+  @override
+  Future<void> skip(Duration delta) => seek(_state.position + delta);
+
+  @override
+  Future<void> toggle() async {
+    _state = _state.copyWith(playing: !_state.playing);
+    notifyListeners();
+  }
+
+  @override
+  Future<void> pause() async {
+    _state = _state.copyWith(playing: false);
+    notifyListeners();
+  }
+}

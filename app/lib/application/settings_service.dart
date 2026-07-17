@@ -4,19 +4,24 @@ import '../infrastructure/db/database.dart';
 /// Не синхронизируются между устройствами (ТЗ 0.10.1).
 class SettingsService {
   static const themeKey = 'theme';
+  static const audioBitRateKey = 'audio_bit_rate';
+  static const audioMaxMinutesKey = 'audio_max_minutes';
 
   final AppDatabase db;
 
   SettingsService({required this.db});
 
   Future<String?> get(String key) async {
-    final row = await (db.select(db.appMeta)..where((m) => m.key.equals(key)))
-        .getSingleOrNull();
+    final row = await (db.select(
+      db.appMeta,
+    )..where((m) => m.key.equals(key))).getSingleOrNull();
     return row?.value;
   }
 
   Future<void> set(String key, String value) {
-    return db.into(db.appMeta).insertOnConflictUpdate(
+    return db
+        .into(db.appMeta)
+        .insertOnConflictUpdate(
           AppMetaCompanion.insert(key: key, value: value),
         );
   }

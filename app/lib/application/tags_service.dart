@@ -44,16 +44,20 @@ class TagsService {
       final now = clock.nowUtcMillis();
       var order = 0;
       for (final (name, color) in presetTags) {
-        await db.into(db.tags).insert(TagsCompanion.insert(
-              id: ids.newId(),
-              scope: TagScope.global,
-              name: name,
-              normalizedName: normalizeName(name),
-              colorArgb: color,
-              sortOrder: Value(order++),
-              createdAtUtc: now,
-              updatedAtUtc: now,
-            ));
+        await db
+            .into(db.tags)
+            .insert(
+              TagsCompanion.insert(
+                id: ids.newId(),
+                scope: TagScope.global,
+                name: name,
+                normalizedName: normalizeName(name),
+                colorArgb: color,
+                sortOrder: Value(order++),
+                createdAtUtc: now,
+                updatedAtUtc: now,
+              ),
+            );
       }
     });
   }
@@ -75,13 +79,12 @@ class TagsService {
   }
 
   Stream<List<Tag>> watchNoteTags(String noteId) {
-    final join = db.select(db.tags).join([
-      innerJoin(db.noteTags, db.noteTags.tagId.equalsExp(db.tags.id)),
-    ])
-      ..where(db.noteTags.noteId.equals(noteId) &
-          db.tags.deletedAtUtc.isNull());
+    final join = db.select(db.tags).join(
+      [innerJoin(db.noteTags, db.noteTags.tagId.equalsExp(db.tags.id))],
+    )..where(db.noteTags.noteId.equals(noteId) & db.tags.deletedAtUtc.isNull());
     return join.watch().map(
-        (rows) => rows.map((r) => r.readTable(db.tags)).toList(growable: false));
+      (rows) => rows.map((r) => r.readTable(db.tags)).toList(growable: false),
+    );
   }
 
   Future<String> createTag({
@@ -96,17 +99,21 @@ class TagsService {
     }
     final id = ids.newId();
     final now = clock.nowUtcMillis();
-    await db.into(db.tags).insert(TagsCompanion.insert(
-          id: id,
-          scope: projectId == null ? TagScope.global : TagScope.project,
-          projectId: Value(projectId),
-          name: trimmed,
-          normalizedName: normalizeName(trimmed),
-          colorArgb: colorArgb,
-          icon: Value(icon),
-          createdAtUtc: now,
-          updatedAtUtc: now,
-        ));
+    await db
+        .into(db.tags)
+        .insert(
+          TagsCompanion.insert(
+            id: id,
+            scope: projectId == null ? TagScope.global : TagScope.project,
+            projectId: Value(projectId),
+            name: trimmed,
+            normalizedName: normalizeName(trimmed),
+            colorArgb: colorArgb,
+            icon: Value(icon),
+            createdAtUtc: now,
+            updatedAtUtc: now,
+          ),
+        );
     return id;
   }
 
@@ -115,23 +122,30 @@ class TagsService {
   Future<void> assignTag(String noteId, String tagId) async {
     final now = clock.nowUtcMillis();
     await db.transaction(() async {
-      final note = await (db.select(db.notes)
-            ..where((n) => n.id.equals(noteId)))
-          .getSingle();
-      final tag =
-          await (db.select(db.tags)..where((t) => t.id.equals(tagId))).getSingle();
+      final note = await (db.select(
+        db.notes,
+      )..where((n) => n.id.equals(noteId))).getSingle();
+      final tag = await (db.select(
+        db.tags,
+      )..where((t) => t.id.equals(tagId))).getSingle();
       if (tag.scope == TagScope.project && tag.projectId != note.projectId) {
         throw StateError('project tag belongs to a different project');
       }
-      final existing = await (db.select(db.noteTags)
-            ..where((nt) => nt.noteId.equals(noteId) & nt.tagId.equals(tagId)))
-          .getSingleOrNull();
+      final existing =
+          await (db.select(db.noteTags)..where(
+                (nt) => nt.noteId.equals(noteId) & nt.tagId.equals(tagId),
+              ))
+              .getSingleOrNull();
       if (existing != null) return; // идемпотентно
-      await db.into(db.noteTags).insert(NoteTagsCompanion.insert(
-            noteId: noteId,
-            tagId: tagId,
-            assignedAtUtc: now,
-          ));
+      await db
+          .into(db.noteTags)
+          .insert(
+            NoteTagsCompanion.insert(
+              noteId: noteId,
+              tagId: tagId,
+              assignedAtUtc: now,
+            ),
+          );
       await _tagsChangedEvent(note, now, '{"assigned":"$tagId"}');
     });
   }
@@ -139,27 +153,97 @@ class TagsService {
   Future<void> unassignTag(String noteId, String tagId) async {
     final now = clock.nowUtcMillis();
     await db.transaction(() async {
-      final note = await (db.select(db.notes)
-            ..where((n) => n.id.equals(noteId)))
-          .getSingle();
-      final deleted = await (db.delete(db.noteTags)
-            ..where((nt) => nt.noteId.equals(noteId) & nt.tagId.equals(tagId)))
-          .go();
+      final note = await (db.select(
+        db.notes,
+      )..where((n) => n.id.equals(noteId))).getSingle();
+      final deleted = await (db.delete(
+        db.noteTags,
+      )..where((nt) => nt.noteId.equals(noteId) & nt.tagId.equals(tagId))).go();
       if (deleted > 0) {
         await _tagsChangedEvent(note, now, '{"unassigned":"$tagId"}');
       }
     });
   }
 
+  Future<void> bulkAssignTag(Iterable<Note> selection, String tagId) async {
+    final byId = <String, Note>{for (final note in selection) note.id: note};
+    if (byId.isEmpty || byId.length > 500) {
+      throw ArgumentError('bulk selection must contain 1..500 unique notes');
+    }
+    final now = clock.nowUtcMillis();
+    await db.transaction(() async {
+      final tag =
+          await (db.select(db.tags)..where(
+                (row) => row.id.equals(tagId) & row.deletedAtUtc.isNull(),
+              ))
+              .getSingleOrNull();
+      if (tag == null) throw StateError('tag unavailable');
+      for (final note in byId.values) {
+        if (tag.scope == TagScope.project && tag.projectId != note.projectId) {
+          throw StateError('project tag does not match every selected note');
+        }
+        final existing =
+            await (db.select(db.noteTags)..where(
+                  (link) =>
+                      link.noteId.equals(note.id) & link.tagId.equals(tagId),
+                ))
+                .getSingleOrNull();
+        if (existing != null) continue;
+        final changed =
+            await (db.update(db.notes)..where(
+                  (row) =>
+                      row.id.equals(note.id) &
+                      row.revision.equals(note.revision) &
+                      row.deletedAtUtc.isNull(),
+                ))
+                .write(
+                  NotesCompanion(
+                    updatedAtUtc: Value(now),
+                    revision: Value(note.revision + 1),
+                  ),
+                );
+        if (changed == 0) throw StateError('bulk tag conflict');
+        await db
+            .into(db.noteTags)
+            .insert(
+              NoteTagsCompanion.insert(
+                noteId: note.id,
+                tagId: tagId,
+                assignedAtUtc: now,
+              ),
+            );
+        await _tagsChangedEvent(note, now, '{"assigned":"$tagId"}');
+        await db
+            .into(db.operationJournal)
+            .insert(
+              OperationJournalCompanion.insert(
+                operationId: ids.newId(),
+                deviceId: deviceId,
+                entityKind: 'note',
+                entityId: note.id,
+                baseRevision: Value(note.revision),
+                newRevision: Value(note.revision + 1),
+                operationKind: 'note.bulk_tag_assign',
+                occurredAtUtc: now,
+              ),
+            );
+      }
+    });
+  }
+
   Future<void> _tagsChangedEvent(Note note, int at, String payload) {
-    return db.into(db.noteEvents).insert(NoteEventsCompanion.insert(
-          id: ids.newId(),
-          noteId: note.id,
-          projectIdAtEvent: Value(note.projectId),
-          kind: NoteEventKind.tagsChanged,
-          occurredAtUtc: at,
-          deviceId: deviceId,
-          payloadJson: Value(payload),
-        ));
+    return db
+        .into(db.noteEvents)
+        .insert(
+          NoteEventsCompanion.insert(
+            id: ids.newId(),
+            noteId: note.id,
+            projectIdAtEvent: Value(note.projectId),
+            kind: NoteEventKind.tagsChanged,
+            occurredAtUtc: at,
+            deviceId: deviceId,
+            payloadJson: Value(payload),
+          ),
+        );
   }
 }

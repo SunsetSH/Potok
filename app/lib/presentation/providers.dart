@@ -6,18 +6,28 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../application/drafts_service.dart';
+import '../application/images_service.dart';
+import '../application/media_repair_service.dart';
+import '../application/note_list_query.dart';
 import '../application/notes_service.dart';
 import '../application/projects_service.dart';
+import '../application/sessions_service.dart';
 import '../application/settings_service.dart';
+import '../application/smart_views_service.dart';
+import '../application/storage_usage_service.dart';
 import '../application/tags_service.dart';
 import '../application/transcription_queue.dart';
 import '../domain/clock.dart';
 import '../domain/id_generator.dart';
+import '../domain/types.dart';
 import '../infrastructure/asr/model_manager.dart';
 import '../infrastructure/asr/sherpa_whisper_recognizer.dart';
+import '../infrastructure/audio_player_controller.dart';
+import '../infrastructure/audio_recorder.dart';
 import '../infrastructure/db/database.dart';
 import '../infrastructure/db/device_identity.dart';
 import '../infrastructure/media_store.dart';
+import '../infrastructure/recording_platform.dart';
 import 'theme.dart';
 
 // ---------- DI ----------
@@ -35,6 +45,21 @@ final mediaStoreProvider = FutureProvider<MediaStore>((ref) async {
   return MediaStore(root);
 });
 
+final audioPlaybackControllerFactoryProvider =
+    Provider<AudioPlaybackController Function()>((ref) {
+      return JustAudioPlaybackController.new;
+    });
+
+final audioRecorderFactoryProvider = Provider<AudioRecorderPort Function()>((
+  ref,
+) {
+  return RecordAudioRecorderAdapter.new;
+});
+
+final recordingPlatformProvider = Provider<RecordingPlatformPort>((ref) {
+  return MethodChannelRecordingPlatform();
+});
+
 /// Менеджер model pack'ов (WP-03, ADR-002). Dev-fallback: env
 /// POTOK_ASR_MODEL_DIR указывает на папку модели без манифеста.
 final modelManagerProvider = FutureProvider<AsrModelManager>((ref) async {
@@ -50,8 +75,9 @@ final modelManagerProvider = FutureProvider<AsrModelManager>((ref) async {
 
 /// Durable-очередь расшифровки; при создании возвращает в работу job'ы,
 /// зависшие после краха процесса.
-final transcriptionQueueProvider =
-    FutureProvider<TranscriptionQueue>((ref) async {
+final transcriptionQueueProvider = FutureProvider<TranscriptionQueue>((
+  ref,
+) async {
   final queue = TranscriptionQueue(
     db: ref.watch(databaseProvider),
     media: await ref.watch(mediaStoreProvider.future),
@@ -73,19 +99,24 @@ final activeAsrModelProvider = StreamProvider<ModelManifest?>((ref) async* {
   yield* ref
       .watch(settingsServiceProvider)
       .watch(AsrModelManager.activeModelKey)
-      .asyncMap((id) => id == null
-          ? Future<ModelManifest?>.value()
-          : manager.installedManifest(id));
+      .asyncMap(
+        (id) => id == null
+            ? Future<ModelManifest?>.value()
+            : manager.installedManifest(id),
+      );
 });
 
 final clockProvider = Provider<Clock>((ref) => const SystemClock());
 
-final idGeneratorProvider =
-    Provider<IdGenerator>((ref) => const UuidV7Generator());
+final idGeneratorProvider = Provider<IdGenerator>(
+  (ref) => const UuidV7Generator(),
+);
 
 final deviceIdProvider = FutureProvider<String>((ref) {
   return DeviceIdentity.ensure(
-      ref.watch(databaseProvider), ref.watch(idGeneratorProvider));
+    ref.watch(databaseProvider),
+    ref.watch(idGeneratorProvider),
+  );
 });
 
 final notesServiceProvider = FutureProvider<NotesService>((ref) async {
@@ -119,6 +150,68 @@ final tagsServiceProvider = FutureProvider<TagsService>((ref) async {
   return service;
 });
 
+final imagesServiceProvider = FutureProvider<ImagesService>((ref) async {
+  return ImagesService(
+    db: ref.watch(databaseProvider),
+    media: await ref.watch(mediaStoreProvider.future),
+    clock: ref.watch(clockProvider),
+    ids: ref.watch(idGeneratorProvider),
+  );
+});
+
+final sessionsServiceProvider = FutureProvider<SessionsService>((ref) async {
+  return SessionsService(
+    db: ref.watch(databaseProvider),
+    clock: ref.watch(clockProvider),
+    ids: ref.watch(idGeneratorProvider),
+    deviceId: await ref.watch(deviceIdProvider.future),
+  );
+});
+
+final smartViewsServiceProvider = FutureProvider<SmartViewsService>((
+  ref,
+) async {
+  return SmartViewsService(
+    db: ref.watch(databaseProvider),
+    clock: ref.watch(clockProvider),
+    ids: ref.watch(idGeneratorProvider),
+    deviceId: await ref.watch(deviceIdProvider.future),
+  );
+});
+
+final sessionRecoveryProvider = FutureProvider<int>((ref) async {
+  final service = await ref.watch(sessionsServiceProvider.future);
+  return service.recoverOnStartup();
+});
+
+final mediaRecoveryProvider = FutureProvider<MediaRepairReport>((ref) async {
+  final service = MediaRepairService(
+    db: ref.watch(databaseProvider),
+    media: await ref.watch(mediaStoreProvider.future),
+    notes: await ref.watch(notesServiceProvider.future),
+    clock: ref.watch(clockProvider),
+  );
+  return service.reconcile();
+});
+
+/// Non-blocking startup repair for image tombstones/orphans. Seven days keeps
+/// crash-created ready files recoverable before automatic cleanup.
+final imageRecoveryProvider = FutureProvider<ImageReconcileReport>((ref) async {
+  await ref.watch(mediaRecoveryProvider.future);
+  final service = await ref.watch(imagesServiceProvider.future);
+  return service.reconcileOrphanImages(gracePeriod: const Duration(days: 7));
+});
+
+/// Файл inline-изображения по asset id (embed `asset://<id>`); null —
+/// asset не готов или файл пропал, UI рисует плейсхолдер.
+final imageAssetFileProvider = FutureProvider.family<File?, String>((
+  ref,
+  assetId,
+) async {
+  final service = await ref.watch(imagesServiceProvider.future);
+  return service.resolveReadyImageFile(assetId);
+});
+
 final draftsServiceProvider = Provider<DraftsService>((ref) {
   return DraftsService(
     db: ref.watch(databaseProvider),
@@ -128,6 +221,37 @@ final draftsServiceProvider = Provider<DraftsService>((ref) {
 
 final settingsServiceProvider = Provider<SettingsService>((ref) {
   return SettingsService(db: ref.watch(databaseProvider));
+});
+
+final audioBitRateProvider = StreamProvider<int>((ref) {
+  return ref
+      .watch(settingsServiceProvider)
+      .watch(SettingsService.audioBitRateKey)
+      .map((value) {
+        final parsed = int.tryParse(value ?? '');
+        return const {48000, 64000, 96000}.contains(parsed) ? parsed! : 64000;
+      });
+});
+
+final audioMaxMinutesProvider = StreamProvider<int>((ref) {
+  return ref
+      .watch(settingsServiceProvider)
+      .watch(SettingsService.audioMaxMinutesKey)
+      .map((value) {
+        final parsed = int.tryParse(value ?? '');
+        return const {10, 30, 60, 120}.contains(parsed) ? parsed! : 30;
+      });
+});
+
+final storageUsageProvider = FutureProvider.autoDispose<StorageUsage>((
+  ref,
+) async {
+  final service = StorageUsageService(
+    db: ref.watch(databaseProvider),
+    media: await ref.watch(mediaStoreProvider.future),
+    platform: ref.watch(recordingPlatformProvider),
+  );
+  return service.snapshot();
 });
 
 // ---------- Тема ----------
@@ -186,6 +310,20 @@ class ProjectSection extends NavSection {
   int get hashCode => Object.hash(ProjectSection, projectId);
 }
 
+class SmartViewSection extends NavSection {
+  final String viewId;
+  final String name;
+
+  const SmartViewSection(this.viewId, this.name);
+
+  @override
+  bool operator ==(Object other) =>
+      other is SmartViewSection && other.viewId == viewId;
+
+  @override
+  int get hashCode => Object.hash(SmartViewSection, viewId);
+}
+
 class NavSectionNotifier extends Notifier<NavSection> {
   @override
   NavSection build() => const AllNotesSection();
@@ -195,11 +333,13 @@ class NavSectionNotifier extends Notifier<NavSection> {
     state = section;
     // Раздел сменился — прежний выбор заметки не относится к новому списку.
     ref.read(selectedNoteIdProvider.notifier).select(null);
+    ref.read(bulkSelectedNoteIdsProvider.notifier).clear();
   }
 }
 
-final navSectionProvider =
-    NotifierProvider<NavSectionNotifier, NavSection>(NavSectionNotifier.new);
+final navSectionProvider = NotifierProvider<NavSectionNotifier, NavSection>(
+  NavSectionNotifier.new,
+);
 
 class SelectedNoteIdNotifier extends Notifier<String?> {
   @override
@@ -210,7 +350,26 @@ class SelectedNoteIdNotifier extends Notifier<String?> {
 
 final selectedNoteIdProvider =
     NotifierProvider<SelectedNoteIdNotifier, String?>(
-        SelectedNoteIdNotifier.new);
+      SelectedNoteIdNotifier.new,
+    );
+
+class BulkSelectedNoteIdsNotifier extends Notifier<Set<String>> {
+  @override
+  Set<String> build() => const {};
+
+  void toggle(String id) {
+    state = state.contains(id)
+        ? Set.unmodifiable(state.where((value) => value != id))
+        : Set.unmodifiable({...state, id});
+  }
+
+  void clear() => state = const {};
+}
+
+final bulkSelectedNoteIdsProvider =
+    NotifierProvider<BulkSelectedNoteIdsNotifier, Set<String>>(
+      BulkSelectedNoteIdsNotifier.new,
+    );
 
 // ---------- Поиск и фильтр-чипы ----------
 
@@ -221,8 +380,9 @@ class SearchQueryNotifier extends Notifier<String> {
   void set(String query) => state = query;
 }
 
-final searchQueryProvider =
-    NotifierProvider<SearchQueryNotifier, String>(SearchQueryNotifier.new);
+final searchQueryProvider = NotifierProvider<SearchQueryNotifier, String>(
+  SearchQueryNotifier.new,
+);
 
 enum NoteChipFilter {
   all('Все'),
@@ -234,15 +394,71 @@ enum NoteChipFilter {
   const NoteChipFilter(this.label);
 }
 
-class ChipFilterNotifier extends Notifier<NoteChipFilter> {
-  @override
-  NoteChipFilter build() => NoteChipFilter.all;
+class NoteListViewSettings {
+  final NoteListFilter filter;
+  final NoteListOrder order;
 
-  void select(NoteChipFilter filter) => state = filter;
+  const NoteListViewSettings({
+    this.filter = const NoteListFilter(),
+    this.order = const NoteListOrder(),
+  });
 }
 
-final chipFilterProvider = NotifierProvider<ChipFilterNotifier, NoteChipFilter>(
-    ChipFilterNotifier.new);
+class NoteListViewSettingsNotifier extends Notifier<NoteListViewSettings> {
+  @override
+  NoteListViewSettings build() => const NoteListViewSettings();
+
+  void selectQuick(NoteChipFilter quick) {
+    final next = switch (quick) {
+      NoteChipFilter.all => state.filter.copyWith(
+        statuses: const {},
+        requireAudio: false,
+      ),
+      NoteChipFilter.inWork => state.filter.copyWith(
+        statuses: const {NoteStatus.inWork},
+        requireAudio: false,
+      ),
+      NoteChipFilter.done => state.filter.copyWith(
+        statuses: const {NoteStatus.done},
+        requireAudio: false,
+      ),
+      NoteChipFilter.withAudio => state.filter.copyWith(
+        statuses: const {},
+        requireAudio: true,
+      ),
+    };
+    state = NoteListViewSettings(filter: next, order: state.order);
+  }
+
+  void apply({required NoteListFilter filter, required NoteListOrder order}) {
+    state = NoteListViewSettings(filter: filter, order: order);
+  }
+
+  void clearFilters() {
+    state = NoteListViewSettings(order: state.order);
+  }
+}
+
+final noteListViewSettingsProvider =
+    NotifierProvider<NoteListViewSettingsNotifier, NoteListViewSettings>(
+      NoteListViewSettingsNotifier.new,
+    );
+
+final activeQuickFilterProvider = Provider<NoteChipFilter?>((ref) {
+  final filter = ref.watch(noteListViewSettingsProvider).filter;
+  if (filter.requireAudio && filter.statuses.isEmpty) {
+    return NoteChipFilter.withAudio;
+  }
+  if (!filter.requireAudio && filter.statuses.length == 1) {
+    return filter.statuses.single == NoteStatus.inWork
+        ? NoteChipFilter.inWork
+        : NoteChipFilter.done;
+  }
+  if (!filter.requireAudio && filter.statuses.isEmpty) {
+    return NoteChipFilter.all;
+  }
+  return null;
+});
 
 // ---------- Потоки данных ----------
 
@@ -252,71 +468,277 @@ final projectsProvider = StreamProvider<List<Project>>((ref) async* {
 });
 
 /// Все живые заметки: счётчики sidebar и выбранная заметка detail-панели.
-final allNotesProvider = StreamProvider<List<Note>>((ref) async* {
+final navigationSummaryProvider = StreamProvider<NavigationSummary>((
+  ref,
+) async* {
   final service = await ref.watch(notesServiceProvider.future);
-  yield* service.watchNotes();
+  yield* service.watchNavigationSummary();
 });
 
-final trashNotesProvider = StreamProvider<List<Note>>((ref) async* {
+final projectNoteCountsProvider = StreamProvider<Map<String, int>>((
+  ref,
+) async* {
   final service = await ref.watch(notesServiceProvider.future);
-  yield* service.watchTrash();
+  yield* service.watchProjectCounts();
+});
+
+final notesChangeProvider = StreamProvider<void>((ref) async* {
+  final service = await ref.watch(notesServiceProvider.future);
+  yield* service.watchChanges();
+});
+
+final smartViewsProvider = StreamProvider<List<SmartView>>((ref) async* {
+  final service = await ref.watch(smartViewsServiceProvider.future);
+  yield* service.watchViews();
+});
+
+final currentSessionProvider = StreamProvider<Session?>((ref) async* {
+  final service = await ref.watch(sessionsServiceProvider.future);
+  yield* service.watchCurrent();
+});
+
+final sessionsProvider = StreamProvider<List<Session>>((ref) async* {
+  final service = await ref.watch(sessionsServiceProvider.future);
+  yield* service.watchSessions();
+});
+
+final sessionNotesProvider = StreamProvider.family<List<Note>, String>((
+  ref,
+  sessionId,
+) async* {
+  final service = await ref.watch(sessionsServiceProvider.future);
+  yield* service.watchNotes(sessionId);
 });
 
 /// Заметки текущего раздела sidebar.
-final sectionNotesProvider = StreamProvider<List<Note>>((ref) async* {
-  final section = ref.watch(navSectionProvider);
-  final service = await ref.watch(notesServiceProvider.future);
-  yield* switch (section) {
-    AllNotesSection() => service.watchNotes(),
-    NoProjectSection() => service.watchNotes(onlyNoProject: true),
-    FavoritesSection() => service.watchNotes(onlyFavorites: true),
-    ProjectSection(:final projectId) =>
-      service.watchNotes(projectId: projectId),
-    TrashSection() => service.watchTrash(),
-  };
-});
+class PagedNotesState {
+  final List<Note> notes;
+  final NoteListCursor? nextCursor;
+  final bool hasMore;
+  final bool loadingMore;
+
+  const PagedNotesState({
+    required this.notes,
+    required this.nextCursor,
+    required this.hasMore,
+    this.loadingMore = false,
+  });
+
+  PagedNotesState copyWith({
+    List<Note>? notes,
+    NoteListCursor? nextCursor,
+    bool? hasMore,
+    bool? loadingMore,
+  }) => PagedNotesState(
+    notes: notes ?? this.notes,
+    nextCursor: nextCursor ?? this.nextCursor,
+    hasMore: hasMore ?? this.hasMore,
+    loadingMore: loadingMore ?? this.loadingMore,
+  );
+}
+
+class PagedSectionNotesNotifier extends AsyncNotifier<PagedNotesState> {
+  static const pageSize = 50;
+
+  @override
+  Future<PagedNotesState> build() async {
+    ref.watch(notesChangeProvider);
+    final section = ref.watch(navSectionProvider);
+    final settings = ref.watch(noteListViewSettingsProvider);
+    final service = await ref.watch(notesServiceProvider.future);
+    final page = await _fetch(service, section, settings, after: null);
+    return _fromPage(page);
+  }
+
+  Future<void> loadMore() async {
+    final current = state.value;
+    if (current == null || !current.hasMore || current.loadingMore) return;
+    final cursor = current.nextCursor;
+    if (cursor == null) return;
+    state = AsyncData(current.copyWith(loadingMore: true));
+    try {
+      final service = await ref.read(notesServiceProvider.future);
+      final page = await _fetch(
+        service,
+        ref.read(navSectionProvider),
+        ref.read(noteListViewSettingsProvider),
+        after: cursor,
+      );
+      final stillCurrent = state.value;
+      if (stillCurrent == null || stillCurrent.nextCursor != cursor) return;
+      state = AsyncData(
+        PagedNotesState(
+          notes: List.unmodifiable([...current.notes, ...page.notes]),
+          nextCursor: page.nextCursor,
+          hasMore: page.hasMore,
+        ),
+      );
+    } catch (error, stackTrace) {
+      state = AsyncError(error, stackTrace);
+    }
+  }
+
+  Future<void> refresh() async {
+    ref.invalidateSelf();
+    await future;
+  }
+
+  static PagedNotesState _fromPage(NoteListPage page) => PagedNotesState(
+    notes: page.notes,
+    nextCursor: page.nextCursor,
+    hasMore: page.hasMore,
+  );
+
+  static Future<NoteListPage> _fetch(
+    NotesService service,
+    NavSection section,
+    NoteListViewSettings settings, {
+    required NoteListCursor? after,
+  }) {
+    return switch (section) {
+      AllNotesSection() || SmartViewSection() => service.fetchNotesPage(
+        filter: settings.filter,
+        order: settings.order,
+        after: after,
+        pageSize: pageSize,
+      ),
+      NoProjectSection() => service.fetchNotesPage(
+        onlyNoProject: true,
+        filter: settings.filter,
+        order: settings.order,
+        after: after,
+        pageSize: pageSize,
+      ),
+      FavoritesSection() => service.fetchNotesPage(
+        onlyFavorites: true,
+        filter: settings.filter,
+        order: settings.order,
+        after: after,
+        pageSize: pageSize,
+      ),
+      ProjectSection(:final projectId) => service.fetchNotesPage(
+        projectId: projectId,
+        filter: settings.filter,
+        order: settings.order,
+        after: after,
+        pageSize: pageSize,
+      ),
+      TrashSection() => service.fetchTrashPage(
+        after: after,
+        pageSize: pageSize,
+      ),
+    };
+  }
+}
+
+final pagedSectionNotesProvider =
+    AsyncNotifierProvider<PagedSectionNotesNotifier, PagedNotesState>(
+      PagedSectionNotesNotifier.new,
+    );
+
+/// Override seam for focused widget tests without constructing persistence.
+final visiblePagedNotesProvider = Provider<AsyncValue<PagedNotesState>>(
+  (ref) => ref.watch(pagedSectionNotesProvider),
+);
 
 final searchResultsProvider = FutureProvider<List<Note>>((ref) async {
+  ref.watch(notesChangeProvider);
   final query = ref.watch(searchQueryProvider).trim();
   if (query.isEmpty) return const <Note>[];
   final service = await ref.watch(notesServiceProvider.future);
-  return service.searchNotes(query);
+  final hits = await service.searchNotes(query);
+  final section = ref.watch(navSectionProvider);
+  final settings = ref.watch(noteListViewSettingsProvider);
+  final ids = hits.map((note) => note.id);
+  return switch (section) {
+    AllNotesSection() || SmartViewSection() => service.filterNotesByIds(
+      ids,
+      filter: settings.filter,
+      order: settings.order,
+    ),
+    NoProjectSection() => service.filterNotesByIds(
+      ids,
+      onlyNoProject: true,
+      filter: settings.filter,
+      order: settings.order,
+    ),
+    FavoritesSection() => service.filterNotesByIds(
+      ids,
+      onlyFavorites: true,
+      filter: settings.filter,
+      order: settings.order,
+    ),
+    ProjectSection(:final projectId) => service.filterNotesByIds(
+      ids,
+      projectId: projectId,
+      filter: settings.filter,
+      order: settings.order,
+    ),
+    TrashSection() => const <Note>[],
+  };
 });
 
 /// Выбранная заметка — всегда свежая строка из общего потока (после
 /// автосохранения revision меняется, и мутации должны видеть её).
+final selectedNoteStreamProvider = StreamProvider.family<Note?, String>((
+  ref,
+  id,
+) async* {
+  final service = await ref.watch(notesServiceProvider.future);
+  yield* service.watchNote(id);
+});
+
 final selectedNoteProvider = Provider<Note?>((ref) {
   final id = ref.watch(selectedNoteIdProvider);
   if (id == null) return null;
-  final notes = ref.watch(allNotesProvider).value;
-  if (notes == null) return null;
-  for (final note in notes) {
-    if (note.id == id) return note;
-  }
-  return null;
+  return ref.watch(selectedNoteStreamProvider(id)).value;
 });
 
-final noteTagsProvider =
-    StreamProvider.family<List<Tag>, String>((ref, noteId) async* {
+final noteTagsProvider = StreamProvider.family<List<Tag>, String>((
+  ref,
+  noteId,
+) async* {
   final service = await ref.watch(tagsServiceProvider.future);
   yield* service.watchNoteTags(noteId);
 });
 
 /// Теги, доступные заметке: глобальные + теги её проекта.
-final availableTagsProvider =
-    StreamProvider.family<List<Tag>, String?>((ref, projectId) async* {
+final availableTagsProvider = StreamProvider.family<List<Tag>, String?>((
+  ref,
+  projectId,
+) async* {
   final service = await ref.watch(tagsServiceProvider.future);
   yield* service.watchTags(projectId: projectId);
 });
 
-final readyAudioAssetProvider =
-    StreamProvider.family<MediaAsset?, String>((ref, noteId) async* {
+final readyAudioAssetProvider = StreamProvider.family<MediaAsset?, String>((
+  ref,
+  noteId,
+) async* {
   final service = await ref.watch(notesServiceProvider.future);
   yield* service.watchReadyAudioAsset(noteId);
 });
 
-final revisionsProvider = StreamProvider.family<List<TranscriptRevision>,
-    String>((ref, noteId) async* {
+final audioAssetsProvider = StreamProvider.family<List<MediaAsset>, String>((
+  ref,
+  noteId,
+) async* {
   final service = await ref.watch(notesServiceProvider.future);
-  yield* service.watchRevisions(noteId);
+  yield* service.watchAudioAssets(noteId);
 });
+
+final trashedAudioProvider = StreamProvider<List<TrashedAudioItem>>((
+  ref,
+) async* {
+  final service = await ref.watch(notesServiceProvider.future);
+  yield* service.watchTrashedAudio();
+});
+
+final revisionsProvider =
+    StreamProvider.family<List<TranscriptRevision>, String>((
+      ref,
+      noteId,
+    ) async* {
+      final service = await ref.watch(notesServiceProvider.future);
+      yield* service.watchRevisions(noteId);
+    });

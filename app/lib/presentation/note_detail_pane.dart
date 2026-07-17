@@ -1,12 +1,19 @@
 import 'dart:async';
 
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_quill/flutter_quill.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path/path.dart' as p;
 
+import '../application/images_service.dart';
 import '../application/notes_service.dart';
 import '../domain/document.dart';
 import '../domain/types.dart';
+import '../infrastructure/audio_player_controller.dart';
 import '../infrastructure/db/database.dart';
+import 'capture_sheet.dart';
+import 'move_note.dart';
 import 'providers.dart';
 import 'sidebar.dart';
 import 'theme.dart';
@@ -14,7 +21,8 @@ import 'theme.dart';
 enum _SaveStatus { saved, saving, error }
 
 /// Detail-панель: toolbar со статусом сохранения, проект, теги,
-/// текст с автосохранением (debounce 500 мс) и аудиоблок с ревизиями.
+/// rich-редактор Quill с автосохранением (debounce 500 мс) и аудиоблок
+/// с ревизиями.
 class NoteDetailPane extends ConsumerStatefulWidget {
   /// Кнопка «назад» на узком макете (панель открыта поверх списка).
   final bool showBack;
@@ -26,10 +34,17 @@ class NoteDetailPane extends ConsumerStatefulWidget {
 }
 
 class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
-  final _controller = TextEditingController();
+  QuillController? _controller;
+  StreamSubscription<DocChange>? _docChanges;
+  final _editorFocus = FocusNode(debugLabel: 'note-editor');
+  final _editorScroll = ScrollController();
   Timer? _debounce;
   String? _noteId;
   Note? _latest;
+
+  /// documentJson, которому соответствует содержимое редактора: маркер
+  /// «есть ли внешнее изменение» и «есть ли что сохранять».
+  String? _syncedJson;
   bool _dirty = false;
   bool _saving = false;
   _SaveStatus _status = _SaveStatus.saved;
@@ -37,31 +52,83 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
   @override
   void dispose() {
     _debounce?.cancel();
-    // Панель закрыта с несохранённым текстом — дописываем без ожидания,
+    _docChanges?.cancel();
+    // Панель закрыта с несохранёнными правками — дописываем без ожидания,
     // чтобы правка не потерялась (durable-сразу, ТЗ 0.1).
     final note = _latest;
-    if (_dirty && note != null) {
+    final controller = _controller;
+    if (_dirty && note != null && controller != null) {
       final service = ref.read(notesServiceProvider).value;
       if (service != null) {
-        unawaited(service
-            .updateDocument(note, PotokDocument.fromPlainText(_controller.text))
-            .catchError((Object e) {
-          debugPrint('note flush failed: ${e.runtimeType}');
-        }));
+        unawaited(
+          service.updateDocument(note, _snapshot(controller)).catchError((
+            Object e,
+          ) {
+            debugPrint('note flush failed: ${e.runtimeType}');
+          }),
+        );
       }
     }
-    _controller.dispose();
+    controller?.dispose();
+    _editorFocus.dispose();
+    _editorScroll.dispose();
     super.dispose();
   }
 
-  /// Проекция текста редактора в plain text документа (для сравнения
-  /// «есть ли несохранённые изменения» без ложных срабатываний).
-  String _projected(String raw) => PotokDocument.fromPlainText(raw).plainText;
+  /// Снимок Quill-документа в canonical-конверт (ADR-003).
+  static PotokDocument _snapshot(QuillController controller) {
+    final ops = controller.document.toDelta().toJson();
+    return PotokDocument.fromDeltaOps(
+      ops
+          .map((op) => Map<String, Object?>.from(op as Map))
+          .toList(growable: false),
+    );
+  }
+
+  static Document _quillDocumentFrom(String documentJson) {
+    List<Map<String, Object?>> ops;
+    try {
+      ops = PotokDocument.decode(documentJson).deltaOps;
+    } on FormatException catch (e) {
+      // Битый документ не должен ронять панель: показываем пустой.
+      debugPrint('document decode failed: ${e.runtimeType}');
+      ops = const [];
+    }
+    return ops.isEmpty ? Document() : Document.fromJson(ops);
+  }
+
+  void _attachController(String documentJson) {
+    _docChanges?.cancel();
+    _controller?.dispose();
+    final controller = QuillController(
+      document: _quillDocumentFrom(documentJson),
+      selection: const TextSelection.collapsed(offset: 0),
+    );
+    _controller = controller;
+    _syncedJson = documentJson;
+    _docChanges = controller.changes.listen(_onDocChange);
+  }
+
+  /// Внешнее изменение (принятая расшифровка, другая панель): подменяем
+  /// документ и переподписываемся — поток changes принадлежит документу.
+  void _reloadDocument(String documentJson) {
+    final controller = _controller;
+    if (controller == null) return;
+    _docChanges?.cancel();
+    controller.document = _quillDocumentFrom(documentJson);
+    _syncedJson = documentJson;
+    _docChanges = controller.changes.listen(_onDocChange);
+  }
 
   void _sync(Note? note) {
     if (note == null) {
       _noteId = null;
       _latest = null;
+      _docChanges?.cancel();
+      _docChanges = null;
+      _controller?.dispose();
+      _controller = null;
+      _syncedJson = null;
       return;
     }
     if (note.id != _noteId) {
@@ -71,19 +138,19 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
       _dirty = false;
       _saving = false;
       _status = _SaveStatus.saved;
-      _controller.text = note.documentPlainText;
+      _attachController(note.documentJson);
       return;
     }
     _latest = note;
-    if (!_dirty &&
-        !_saving &&
-        _projected(_controller.text) != note.documentPlainText) {
-      // Внешнее изменение (принятая расшифровка, другая панель).
-      _controller.text = note.documentPlainText;
+    if (!_dirty && !_saving && note.documentJson != _syncedJson) {
+      _reloadDocument(note.documentJson);
     }
   }
 
-  void _onChanged(String _) {
+  void _onDocChange(DocChange change) {
+    // Локальные правки: набор текста, toggle чекбокса, вставка embed —
+    // всё проходит через автосохранение (FR-DOC-004).
+    if (change.source != ChangeSource.local) return;
     _dirty = true;
     if (_status != _SaveStatus.saving) {
       setState(() => _status = _SaveStatus.saving);
@@ -99,9 +166,11 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
       return;
     }
     final note = _latest;
-    if (note == null) return;
-    final document = PotokDocument.fromPlainText(_controller.text);
-    if (document.plainText == note.documentPlainText) {
+    final controller = _controller;
+    if (note == null || controller == null) return;
+    final document = _snapshot(controller);
+    final encoded = document.encode();
+    if (encoded == _syncedJson) {
       setState(() {
         _dirty = false;
         _status = _SaveStatus.saved;
@@ -109,6 +178,8 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
       return;
     }
     _saving = true;
+    // Правки на момент снимка учтены; новые пометят _dirty заново.
+    _dirty = false;
     try {
       await ref
           .read(notesServiceProvider)
@@ -117,14 +188,14 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
       // Локально фиксируем новую ревизию, не дожидаясь потока: следующее
       // автосохранение не должно упасть на stale revision.
       _latest = note.copyWith(
-        documentJson: document.encode(),
+        documentJson: encoded,
         documentPlainText: document.plainText,
         revision: note.revision + 1,
       );
+      _syncedJson = encoded;
       if (!mounted) return;
       setState(() {
         _saving = false;
-        _dirty = _projected(_controller.text) != document.plainText;
         _status = _dirty ? _SaveStatus.saving : _SaveStatus.saved;
       });
       if (_dirty) {
@@ -132,16 +203,20 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
         _debounce = Timer(const Duration(milliseconds: 500), _save);
       }
     } on StateError {
-      // Конкурентное изменение: показываем актуальную версию из потока.
+      // Конкурентное изменение: _dirty сброшен — следующий build перечитает
+      // актуальную версию из потока.
       if (!mounted) return;
       setState(() {
         _saving = false;
-        _dirty = false;
         _status = _SaveStatus.saved;
       });
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content:
-              Text('Заметка изменена в другом месте — показана актуальная версия')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Заметка изменена в другом месте — показана актуальная версия',
+          ),
+        ),
+      );
     } catch (e) {
       debugPrint('note save failed: ${e.runtimeType}');
       if (!mounted) return;
@@ -150,29 +225,97 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
         _status = _SaveStatus.error;
       });
       ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Не удалось сохранить заметку')));
+        const SnackBar(content: Text('Не удалось сохранить заметку')),
+      );
     }
   }
 
-  Future<void> _guarded(Future<void> Function(NotesService service) action,
-      {String? failMessage}) async {
+  /// Кнопка «▧ изображение»: file_selector → attachImage → embed в позицию
+  /// курсора (FR-DOC-003).
+  Future<void> _insertImage() async {
+    final note = _latest;
+    if (note == null) return;
+    final messenger = ScaffoldMessenger.of(context);
+    const typeGroup = XTypeGroup(
+      label: 'Изображения',
+      extensions: ['jpg', 'jpeg', 'png', 'webp'],
+    );
+    final XFile? picked;
+    try {
+      picked = await openFile(acceptedTypeGroups: const [typeGroup]);
+    } catch (e) {
+      debugPrint('image pick failed: ${e.runtimeType}');
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Не удалось открыть выбор файла')),
+      );
+      return;
+    }
+    if (picked == null || !mounted) return;
+    try {
+      final images = await ref.read(imagesServiceProvider.future);
+      final asset = await images.attachImage(note, picked.path);
+      final controller = _controller;
+      if (!mounted || controller == null || _noteId != note.id) return;
+      final selection = controller.selection;
+      final index = selection.isValid
+          ? selection.start
+          : controller.document.length - 1;
+      final length = selection.isValid ? selection.end - selection.start : 0;
+      controller.replaceText(
+        index,
+        length,
+        BlockEmbed.image('asset://${asset.id}'),
+        TextSelection.collapsed(offset: index + 1),
+      );
+      final defaultAlt = p.basenameWithoutExtension(picked.path).trim();
+      controller.formatText(
+        index,
+        1,
+        Attribute<String>(
+          'alt',
+          AttributeScope.embeds,
+          defaultAlt.isEmpty ? 'Изображение' : defaultAlt,
+        ),
+      );
+      controller.formatText(
+        index,
+        1,
+        const Attribute<String>('display', AttributeScope.embeds, 'wide'),
+      );
+    } on ImageAttachException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (e) {
+      debugPrint('image attach failed: ${e.runtimeType}');
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Не удалось добавить изображение')),
+      );
+    }
+  }
+
+  Future<void> _guarded(
+    Future<void> Function(NotesService service) action, {
+    String? failMessage,
+  }) async {
     final messenger = ScaffoldMessenger.of(context);
     try {
       final service = await ref.read(notesServiceProvider.future);
       await action(service);
     } on StateError {
-      messenger.showSnackBar(const SnackBar(
-          content: Text('Данные изменились — показана актуальная версия')));
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Данные изменились — показана актуальная версия'),
+        ),
+      );
     } catch (e) {
       debugPrint('note action failed: ${e.runtimeType}');
-      messenger.showSnackBar(SnackBar(
-          content: Text(failMessage ?? 'Не удалось выполнить действие')));
+      messenger.showSnackBar(
+        SnackBar(content: Text(failMessage ?? 'Не удалось выполнить действие')),
+      );
     }
   }
 
   Future<void> _moveToProject(Note note) async {
-    final projects =
-        ref.read(projectsProvider).value ?? const <Project>[];
+    final projects = ref.read(projectsProvider).value ?? const <Project>[];
     final c = PotokColors.of(context);
     final selected = await showDialog<_MoveTarget>(
       context: context,
@@ -192,12 +335,11 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
           ),
           for (final project in projects)
             SimpleDialogOption(
-              onPressed: () => Navigator.of(dialogContext)
-                  .pop(_MoveTarget(project.id)),
+              onPressed: () =>
+                  Navigator.of(dialogContext).pop(_MoveTarget(project.id)),
               child: Row(
                 children: [
-                  Icon(Icons.circle,
-                      size: 12, color: Color(project.colorArgb)),
+                  Icon(Icons.circle, size: 12, color: Color(project.colorArgb)),
                   const SizedBox(width: 10),
                   Flexible(child: Text(project.name)),
                 ],
@@ -207,15 +349,15 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
       ),
     );
     if (selected == null) return;
-    await _guarded(
-      (service) => service.moveToProject(note, selected.projectId),
-      failMessage: 'Не удалось перенести заметку',
-    );
+    if (!mounted) return;
+    await moveNoteToProject(context, ref, note, selected.projectId);
   }
 
   Future<void> _moveToTrash(Note note) async {
-    await _guarded((service) => service.moveToTrash(note),
-        failMessage: 'Не удалось удалить заметку');
+    await _guarded(
+      (service) => service.moveToTrash(note),
+      failMessage: 'Не удалось удалить заметку',
+    );
     if (!mounted) return;
     ref.read(selectedNoteIdProvider.notifier).select(null);
     if (widget.showBack && context.mounted) {
@@ -233,10 +375,13 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
       return Container(
         color: c.surface,
         alignment: Alignment.center,
-        child: Text('Выберите заметку',
-            style: TextStyle(color: c.muted, fontSize: 13)),
+        child: Text(
+          'Выберите заметку',
+          style: TextStyle(color: c.muted, fontSize: 13),
+        ),
       );
     }
+    final controller = _controller!;
 
     return Container(
       color: c.surface,
@@ -248,9 +393,9 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
             status: _status,
             showBack: widget.showBack,
             onFavorite: () => _guarded(
-                (service) => service.setFavorite(note, !note.isFavorite)),
-            onToggleDone: () =>
-                _guarded((service) => service.toggleDone(note)),
+              (service) => service.setFavorite(note, !note.isFavorite),
+            ),
+            onToggleDone: () => _guarded((service) => service.toggleDone(note)),
             onMove: () => _moveToProject(note),
             onTrash: () => _moveToTrash(note),
           ),
@@ -262,27 +407,244 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
                 const SizedBox(height: 14),
                 _TagsRow(note: note),
                 const SizedBox(height: 14),
-                TextField(
-                  controller: _controller,
-                  onChanged: _onChanged,
-                  maxLines: null,
-                  keyboardType: TextInputType.multiline,
-                  style: TextStyle(fontSize: 16, height: 1.72, color: c.text),
-                  decoration: InputDecoration(
-                    isCollapsed: true,
-                    border: InputBorder.none,
-                    hintText: 'Текст заметки…',
-                    hintStyle: TextStyle(color: c.muted),
+                Container(
+                  decoration: BoxDecoration(
+                    color: c.surface2,
+                    borderRadius: BorderRadius.circular(c.radiusSmall),
+                    border: Border.all(color: c.line),
+                  ),
+                  child: QuillSimpleToolbar(
+                    controller: controller,
+                    config: QuillSimpleToolbarConfig(
+                      decoration: const BoxDecoration(),
+                      color: Colors.transparent,
+                      sectionDividerColor: c.line,
+                      showFontFamily: false,
+                      showFontSize: false,
+                      showUnderLineButton: false,
+                      showInlineCode: false,
+                      showColorButton: false,
+                      showBackgroundColorButton: false,
+                      showClearFormat: false,
+                      showAlignmentButtons: false,
+                      showHeaderStyle: false,
+                      showListNumbers: false,
+                      showListBullets: false,
+                      showCodeBlock: false,
+                      showQuote: false,
+                      showIndent: false,
+                      showSearchButton: false,
+                      showSubscript: false,
+                      showSuperscript: false,
+                      customButtons: [
+                        QuillToolbarCustomButtonOptions(
+                          tooltip: 'Вставить изображение',
+                          icon: const Icon(Icons.image_outlined),
+                          onPressed: _insertImage,
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-                if (note.sourceKind == SourceKind.audio) ...[
-                  const SizedBox(height: 26),
-                  _AudioSection(note: note),
-                ],
+                const SizedBox(height: 12),
+                QuillEditor(
+                  controller: controller,
+                  focusNode: _editorFocus,
+                  scrollController: _editorScroll,
+                  config: const QuillEditorConfig(
+                    scrollable: false,
+                    placeholder: 'Текст заметки…',
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                    embedBuilders: [_ManagedImageEmbedBuilder()],
+                  ),
+                ),
+                const SizedBox(height: 26),
+                _AudioSection(
+                  note: note,
+                  onManualTranscription: _editorFocus.requestFocus,
+                ),
               ],
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _ManagedImageEmbedBuilder extends EmbedBuilder {
+  const _ManagedImageEmbedBuilder();
+
+  @override
+  String get key => BlockEmbed.imageType;
+
+  @override
+  Widget build(BuildContext context, EmbedContext embedContext) {
+    final source = embedContext.node.value.data;
+    final assetId = source is String && source.startsWith('asset://')
+        ? source.substring('asset://'.length)
+        : null;
+    if (assetId == null ||
+        assetId.isEmpty ||
+        assetId.contains(RegExp(r'[/\\?#]'))) {
+      return const _UnavailableImage();
+    }
+    final attributes = embedContext.node.style.attributes;
+    final altValue = attributes['alt']?.value;
+    final alt = altValue is String && altValue.trim().isNotEmpty
+        ? altValue.trim()
+        : 'Изображение в заметке';
+    final displayValue = attributes['display']?.value;
+    final compact = displayValue == 'compact';
+    return Consumer(
+      builder: (context, ref, _) {
+        final file = ref.watch(imageAssetFileProvider(assetId));
+        return file.when(
+          loading: () => const SizedBox(
+            height: 120,
+            child: Center(child: CircularProgressIndicator()),
+          ),
+          error: (_, _) => const _UnavailableImage(),
+          data: (imageFile) {
+            if (imageFile == null) return const _UnavailableImage();
+            Widget image = Semantics(
+              label: alt,
+              button: !embedContext.readOnly,
+              hint: embedContext.readOnly
+                  ? null
+                  : 'Открыть свойства изображения',
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.file(
+                  imageFile,
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, _, _) => const _UnavailableImage(),
+                ),
+              ),
+            );
+            if (compact) {
+              image = ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 360),
+                child: image,
+              );
+            }
+            return Align(
+              alignment: Alignment.centerLeft,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: embedContext.readOnly
+                    ? null
+                    : () => _editImageProperties(
+                        context,
+                        embedContext,
+                        initialAlt: alt,
+                        initialDisplay: compact ? 'compact' : 'wide',
+                      ),
+                child: image,
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+Future<void> _editImageProperties(
+  BuildContext context,
+  EmbedContext embedContext, {
+  required String initialAlt,
+  required String initialDisplay,
+}) async {
+  final nodeOffset = embedContext.node.documentOffset;
+  final altController = TextEditingController(text: initialAlt);
+  var display = initialDisplay;
+  try {
+    final result = await showDialog<({String alt, String display})>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          title: const Text('Свойства изображения'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextField(
+                controller: altController,
+                maxLength: 200,
+                decoration: const InputDecoration(
+                  labelText: 'Описание для доступности',
+                  hintText: 'Что изображено',
+                ),
+              ),
+              const SizedBox(height: 12),
+              SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(value: 'wide', label: Text('По ширине')),
+                  ButtonSegment(value: 'compact', label: Text('Компактно')),
+                ],
+                selected: {display},
+                onSelectionChanged: (selection) {
+                  setState(() => display = selection.single);
+                },
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Отмена'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(
+                dialogContext,
+              ).pop((alt: altController.text.trim(), display: display)),
+              child: const Text('Сохранить'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (result == null ||
+        nodeOffset >= embedContext.controller.document.length) {
+      return;
+    }
+    embedContext.controller.formatText(
+      nodeOffset,
+      1,
+      Attribute<String>(
+        'alt',
+        AttributeScope.embeds,
+        result.alt.isEmpty ? 'Изображение' : result.alt,
+      ),
+    );
+    embedContext.controller.formatText(
+      nodeOffset,
+      1,
+      Attribute<String>('display', AttributeScope.embeds, result.display),
+    );
+  } finally {
+    altController.dispose();
+  }
+}
+
+class _UnavailableImage extends StatelessWidget {
+  const _UnavailableImage();
+
+  @override
+  Widget build(BuildContext context) {
+    final c = PotokColors.of(context);
+    return Container(
+      constraints: const BoxConstraints(minHeight: 96),
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: c.surface2,
+        borderRadius: BorderRadius.circular(c.radiusSmall),
+        border: Border.all(color: c.line),
+      ),
+      child: Text(
+        'Изображение недоступно',
+        style: TextStyle(fontSize: 12, color: c.muted),
       ),
     );
   }
@@ -378,11 +740,12 @@ class _Toolbar extends StatelessWidget {
             },
             itemBuilder: (context) => [
               const PopupMenuItem(
-                  value: 'move', child: Text('Перенести в проект…')),
+                value: 'move',
+                child: Text('Перенести в проект…'),
+              ),
               PopupMenuItem(
                 value: 'trash',
-                child: Text('В корзину',
-                    style: TextStyle(color: c.danger)),
+                child: Text('В корзину', style: TextStyle(color: c.danger)),
               ),
             ],
           ),
@@ -399,8 +762,7 @@ class _ProjectRow extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final c = PotokColors.of(context);
-    final projects =
-        ref.watch(projectsProvider).value ?? const <Project>[];
+    final projects = ref.watch(projectsProvider).value ?? const <Project>[];
     Project? project;
     for (final p in projects) {
       if (p.id == note.projectId) {
@@ -436,14 +798,19 @@ class _TagsRow extends ConsumerWidget {
 
   const _TagsRow({required this.note});
 
-  Future<void> _runTagAction(BuildContext context, WidgetRef ref,
-      Future<void> Function() action, String failMessage) async {
+  Future<void> _runTagAction(
+    BuildContext context,
+    WidgetRef ref,
+    Future<void> Function() action,
+    String failMessage,
+  ) async {
     final messenger = ScaffoldMessenger.of(context);
     try {
       await action();
     } on StateError {
-      messenger.showSnackBar(const SnackBar(
-          content: Text('Тег недоступен для этой заметки')));
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Тег недоступен для этой заметки')),
+      );
     } catch (e) {
       debugPrint('tag action failed: ${e.runtimeType}');
       messenger.showSnackBar(SnackBar(content: Text(failMessage)));
@@ -455,8 +822,8 @@ class _TagsRow extends ConsumerWidget {
     final c = PotokColors.of(context);
     final noteTags =
         ref.watch(noteTagsProvider(note.id)).value ?? const <Tag>[];
-    final available = ref.watch(availableTagsProvider(note.projectId)).value ??
-        const <Tag>[];
+    final available =
+        ref.watch(availableTagsProvider(note.projectId)).value ?? const <Tag>[];
     final assignedIds = noteTags.map((t) => t.id).toSet();
     final addable = available
         .where((t) => !assignedIds.contains(t.id))
@@ -472,22 +839,20 @@ class _TagsRow extends ConsumerWidget {
             waitDuration: const Duration(milliseconds: 600),
             child: InkWell(
               borderRadius: BorderRadius.circular(999),
-              onTap: () => _runTagAction(
-                context,
-                ref,
-                () async {
-                  final service = await ref.read(tagsServiceProvider.future);
-                  await service.unassignTag(note.id, tag.id);
-                },
-                'Не удалось снять тег',
-              ),
+              onTap: () => _runTagAction(context, ref, () async {
+                final service = await ref.read(tagsServiceProvider.future);
+                await service.unassignTag(note.id, tag.id);
+              }, 'Не удалось снять тег'),
               child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
                 decoration: BoxDecoration(
                   color: Color(tag.colorArgb).withValues(alpha: 0.12),
                   border: Border.all(
-                      color: Color(tag.colorArgb).withValues(alpha: 0.45)),
+                    color: Color(tag.colorArgb).withValues(alpha: 0.45),
+                  ),
                   borderRadius: BorderRadius.circular(999),
                 ),
                 child: Text(
@@ -504,23 +869,17 @@ class _TagsRow extends ConsumerWidget {
         if (addable.isNotEmpty)
           PopupMenuButton<String>(
             tooltip: 'Добавить тег',
-            onSelected: (tagId) => _runTagAction(
-              context,
-              ref,
-              () async {
-                final service = await ref.read(tagsServiceProvider.future);
-                await service.assignTag(note.id, tagId);
-              },
-              'Не удалось добавить тег',
-            ),
+            onSelected: (tagId) => _runTagAction(context, ref, () async {
+              final service = await ref.read(tagsServiceProvider.future);
+              await service.assignTag(note.id, tagId);
+            }, 'Не удалось добавить тег'),
             itemBuilder: (context) => [
               for (final tag in addable)
                 PopupMenuItem(
                   value: tag.id,
                   child: Row(
                     children: [
-                      Icon(Icons.circle,
-                          size: 10, color: Color(tag.colorArgb)),
+                      Icon(Icons.circle, size: 10, color: Color(tag.colorArgb)),
                       const SizedBox(width: 8),
                       Flexible(child: Text(tag.name)),
                     ],
@@ -528,14 +887,15 @@ class _TagsRow extends ConsumerWidget {
                 ),
             ],
             child: Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               decoration: BoxDecoration(
                 border: Border.all(color: c.line),
                 borderRadius: BorderRadius.circular(999),
               ),
-              child: Text('+ тег',
-                  style: TextStyle(fontSize: 11, color: c.muted)),
+              child: Text(
+                '+ тег',
+                style: TextStyle(fontSize: 11, color: c.muted),
+              ),
             ),
           ),
       ],
@@ -548,23 +908,37 @@ class _TagsRow extends ConsumerWidget {
 /// локального «идёт расшифровка» флага нет).
 class _AudioSection extends ConsumerWidget {
   final Note note;
-  const _AudioSection({required this.note});
+  final VoidCallback onManualTranscription;
+
+  const _AudioSection({
+    required this.note,
+    required this.onManualTranscription,
+  });
 
   Future<void> _enqueue(
-      BuildContext context, WidgetRef ref, String assetId) async {
+    BuildContext context,
+    WidgetRef ref,
+    String assetId,
+  ) async {
     final messenger = ScaffoldMessenger.of(context);
     try {
       final queue = await ref.read(transcriptionQueueProvider.future);
       await queue.enqueue(note.id, assetId);
     } catch (e) {
       debugPrint('enqueue transcription failed: ${e.runtimeType}');
-      messenger.showSnackBar(const SnackBar(
-          content: Text('Не удалось поставить расшифровку в очередь')));
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Не удалось поставить расшифровку в очередь'),
+        ),
+      );
     }
   }
 
   Future<void> _retry(
-      BuildContext context, WidgetRef ref, String revisionId) async {
+    BuildContext context,
+    WidgetRef ref,
+    String revisionId,
+  ) async {
     final messenger = ScaffoldMessenger.of(context);
     try {
       final queue = await ref.read(transcriptionQueueProvider.future);
@@ -572,38 +946,79 @@ class _AudioSection extends ConsumerWidget {
     } catch (e) {
       debugPrint('retry transcription failed: ${e.runtimeType}');
       messenger.showSnackBar(
-          const SnackBar(content: Text('Не удалось повторить расшифровку')));
+        const SnackBar(content: Text('Не удалось повторить расшифровку')),
+      );
     }
   }
 
   Future<void> _accept(
-      BuildContext context, WidgetRef ref, String revisionId) async {
+    BuildContext context,
+    WidgetRef ref,
+    String revisionId,
+  ) async {
     final messenger = ScaffoldMessenger.of(context);
     try {
       final service = await ref.read(notesServiceProvider.future);
       await service.acceptTranscript(note.id, revisionId);
     } on StateError {
-      messenger.showSnackBar(const SnackBar(
-          content: Text('Заметка изменилась — повторите принятие')));
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Заметка изменилась — повторите принятие'),
+        ),
+      );
     } catch (e) {
       debugPrint('accept transcript failed: ${e.runtimeType}');
       messenger.showSnackBar(
-          const SnackBar(content: Text('Не удалось принять расшифровку')));
+        const SnackBar(content: Text('Не удалось принять расшифровку')),
+      );
+    }
+  }
+
+  Future<void> _removeAudio(
+    BuildContext context,
+    WidgetRef ref,
+    MediaAsset asset,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Удалить аудио?'),
+        content: const Text(
+          'Запись перейдёт в корзину. Текст заметки и расшифровки не изменятся.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('В корзину'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final service = await ref.read(notesServiceProvider.future);
+      await service.moveAudioToTrash(note, asset);
+    } catch (error) {
+      debugPrint('audio trash failed: ${error.runtimeType}');
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Не удалось удалить аудио')),
+      );
     }
   }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final c = PotokColors.of(context);
-    final asset = ref.watch(readyAudioAssetProvider(note.id)).value;
-    final revisions = ref.watch(revisionsProvider(note.id)).value ??
+    final assets =
+        ref.watch(audioAssetsProvider(note.id)).value ?? const <MediaAsset>[];
+    final revisions =
+        ref.watch(revisionsProvider(note.id)).value ??
         const <TranscriptRevision>[];
-    if (asset == null) return const SizedBox.shrink();
-
-    final inFlight = revisions.any((r) =>
-        r.state == TranscriptState.queued ||
-        r.state == TranscriptState.recognizing);
-
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 8, 8, 8),
       decoration: BoxDecoration(
@@ -614,21 +1029,81 @@ class _AudioSection extends ConsumerWidget {
         children: [
           Row(
             children: [
-              Icon(Icons.play_arrow_rounded, size: 16, color: c.muted),
-              const SizedBox(width: 6),
               Expanded(
                 child: Text(
-                  'Исходное аудио · ${(asset.sizeBytes / 1024).ceil()} КБ · WAV',
-                  style: TextStyle(fontSize: 12, color: c.muted),
+                  'Аудиовложения',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: c.text,
+                  ),
                 ),
               ),
-              TextButton(
-                onPressed:
-                    inFlight ? null : () => _enqueue(context, ref, asset.id),
-                child: const Text('Расшифровать'),
+              TextButton.icon(
+                key: const ValueKey('add-audio-attachment'),
+                onPressed: () => showCaptureSheet(
+                  context,
+                  attachToNote: note,
+                ),
+                icon: const Icon(Icons.mic_none_rounded, size: 18),
+                label: const Text('Добавить'),
               ),
             ],
           ),
+          if (assets.isEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Text(
+                'Записей пока нет',
+                style: TextStyle(fontSize: 12, color: c.muted),
+              ),
+            ),
+          for (final asset in assets) ...[
+            const SizedBox(height: 6),
+            if (asset.lifecycleState == AssetLifecycle.missing)
+              Semantics(
+                liveRegion: true,
+                child: Text(
+                  'Аудиофайл отсутствует или повреждён',
+                  style: TextStyle(color: c.danger, fontSize: 12),
+                ),
+              )
+            else
+              _AudioPlayerTile(
+                asset: asset,
+                onManualTranscription: onManualTranscription,
+              ),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '${(asset.sizeBytes / 1024).ceil()} КБ · '
+                    '${asset.mimeType == 'audio/mp4' ? 'M4A' : 'WAV'}',
+                    style: TextStyle(fontSize: 12, color: c.muted),
+                  ),
+                ),
+                if (asset.lifecycleState == AssetLifecycle.ready)
+                  TextButton(
+                    onPressed: revisions.any(
+                      (revision) =>
+                          revision.audioAssetId == asset.id &&
+                          (revision.state == TranscriptState.queued ||
+                              revision.state == TranscriptState.recognizing),
+                    )
+                        ? null
+                        : () => _enqueue(context, ref, asset.id),
+                    child: const Text('Расшифровать'),
+                  ),
+                IconButton(
+                  key: ValueKey('audio-delete-${asset.id}'),
+                  tooltip: 'Удалить аудио',
+                  onPressed: () => _removeAudio(context, ref, asset),
+                  icon: const Icon(Icons.delete_outline_rounded, size: 19),
+                ),
+              ],
+            ),
+            Divider(color: c.line),
+          ],
           for (final revision in revisions)
             _RevisionTile(
               revision: revision,
@@ -640,6 +1115,170 @@ class _AudioSection extends ConsumerWidget {
       ),
     );
   }
+}
+
+class _AudioPlayerTile extends ConsumerStatefulWidget {
+  final MediaAsset asset;
+  final VoidCallback onManualTranscription;
+
+  const _AudioPlayerTile({
+    required this.asset,
+    required this.onManualTranscription,
+  });
+
+  @override
+  ConsumerState<_AudioPlayerTile> createState() => _AudioPlayerTileState();
+}
+
+class _AudioPlayerTileState extends ConsumerState<_AudioPlayerTile> {
+  late final AudioPlaybackController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = ref.read(audioPlaybackControllerFactoryProvider)();
+    _controller.addListener(_changed);
+    unawaited(_open());
+  }
+
+  Future<void> _open() async {
+    try {
+      final media = await ref.read(mediaStoreProvider.future);
+      await _controller.open(media.absolutePath(widget.asset.relativePath));
+    } catch (error) {
+      debugPrint('audio player open failed: ${error.runtimeType}');
+    }
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _controller.removeListener(_changed);
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = PotokColors.of(context);
+    final state = _controller.state;
+    if (state.error != null) {
+      return Semantics(
+        liveRegion: true,
+        child: Text(
+          'Аудиофайл недоступен',
+          style: TextStyle(color: c.danger, fontSize: 12),
+        ),
+      );
+    }
+    final maxMs = state.duration.inMilliseconds
+        .toDouble()
+        .clamp(1.0, double.infinity)
+        .toDouble();
+    final positionMs = state.position.inMilliseconds
+        .toDouble()
+        .clamp(0.0, maxMs)
+        .toDouble();
+    return Column(
+      children: [
+        Row(
+          children: [
+            IconButton(
+              key: ValueKey('audio-back-${widget.asset.id}'),
+              tooltip: 'Назад на 10 секунд',
+              onPressed: state.loading
+                  ? null
+                  : () => _controller.skip(const Duration(seconds: -10)),
+              icon: const Icon(Icons.replay_10_rounded),
+            ),
+            IconButton.filled(
+              key: ValueKey('audio-play-${widget.asset.id}'),
+              tooltip: state.playing ? 'Пауза' : 'Воспроизвести',
+              onPressed: state.loading ? null : _controller.toggle,
+              icon: Icon(
+                state.playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+              ),
+            ),
+            IconButton(
+              key: ValueKey('audio-forward-${widget.asset.id}'),
+              tooltip: 'Вперёд на 10 секунд',
+              onPressed: state.loading
+                  ? null
+                  : () => _controller.skip(const Duration(seconds: 10)),
+              icon: const Icon(Icons.forward_10_rounded),
+            ),
+            Expanded(
+              child: Semantics(
+                label: 'Позиция воспроизведения',
+                value:
+                    '${_durationLabel(state.position)} из '
+                    '${_durationLabel(state.duration)}',
+                child: Slider(
+                  key: ValueKey('audio-progress-${widget.asset.id}'),
+                  min: 0,
+                  max: maxMs,
+                  value: positionMs,
+                  onChanged: state.loading
+                      ? null
+                      : (value) => _controller.seek(
+                          Duration(milliseconds: value.round()),
+                        ),
+                ),
+              ),
+            ),
+            PopupMenuButton<double>(
+              key: ValueKey('audio-speed-${widget.asset.id}'),
+              tooltip: 'Скорость воспроизведения',
+              initialValue: state.speed,
+              onSelected: _controller.setSpeed,
+              itemBuilder: (_) => [
+                for (final speed in JustAudioPlaybackController.supportedSpeeds)
+                  PopupMenuItem(value: speed, child: Text('$speed×')),
+              ],
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: Text(
+                  '${state.speed}×',
+                  style: TextStyle(color: c.text, fontSize: 12),
+                ),
+              ),
+            ),
+          ],
+        ),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                '${_durationLabel(state.position)} / ${_durationLabel(state.duration)}',
+                style: TextStyle(color: c.muted, fontSize: 10),
+              ),
+            ),
+            TextButton.icon(
+              key: ValueKey('audio-manual-${widget.asset.id}'),
+              onPressed: state.loading
+                  ? null
+                  : () async {
+                      await _controller.pause();
+                      widget.onManualTranscription();
+                    },
+              icon: const Icon(Icons.edit_note_rounded, size: 18),
+              label: const Text('Печатать вручную'),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+String _durationLabel(Duration duration) {
+  final hours = duration.inHours;
+  final minutes = (duration.inMinutes % 60).toString().padLeft(2, '0');
+  final seconds = (duration.inSeconds % 60).toString().padLeft(2, '0');
+  return hours > 0 ? '$hours:$minutes:$seconds' : '$minutes:$seconds';
 }
 
 class _RevisionTile extends StatelessWidget {
@@ -655,15 +1294,21 @@ class _RevisionTile extends StatelessWidget {
     required this.onConfigure,
   });
 
-  Widget _statusRow(PotokColors c, String label, Color labelColor,
-      {Widget? action}) {
+  Widget _statusRow(
+    PotokColors c,
+    String label,
+    Color labelColor, {
+    Widget? action,
+  }) {
     return Padding(
       padding: const EdgeInsets.only(top: 8),
       child: Row(
         children: [
           Expanded(
-            child:
-                Text(label, style: TextStyle(fontSize: 12, color: labelColor)),
+            child: Text(
+              label,
+              style: TextStyle(fontSize: 12, color: labelColor),
+            ),
           ),
           ?action,
         ],
@@ -695,8 +1340,7 @@ class _RevisionTile extends StatelessWidget {
               if (accepted)
                 Padding(
                   padding: const EdgeInsets.only(left: 8),
-                  child:
-                      Icon(Icons.check_rounded, size: 16, color: c.decision),
+                  child: Icon(Icons.check_rounded, size: 16, color: c.decision),
                 )
               else
                 TextButton(

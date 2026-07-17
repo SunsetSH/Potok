@@ -13,6 +13,22 @@ import 'package:potok/infrastructure/asr/model_manager.dart';
 import 'package:potok/infrastructure/db/database.dart';
 import 'package:potok/infrastructure/media_store.dart';
 
+final _validWavBytes = <int>[
+  0x52,
+  0x49,
+  0x46,
+  0x46,
+  36,
+  0,
+  0,
+  0,
+  0x57,
+  0x41,
+  0x56,
+  0x45,
+  ...List.filled(52, 7),
+];
+
 class _FakeModels implements ActiveModelLocator {
   String? dir;
 
@@ -105,7 +121,7 @@ void main() {
 
   Future<StagedRecording> recordedNote() async {
     final staged = await notes.beginAudioNote(extension: 'wav');
-    await File(staged.stagingPath).writeAsBytes(List.filled(64, 7));
+    await File(staged.stagingPath).writeAsBytes(_validWavBytes);
     await notes.finishAudioNote(
       staged,
       duration: const Duration(seconds: 3),
@@ -116,45 +132,52 @@ void main() {
     return staged;
   }
 
-  Future<TranscriptRevision> revisionById(String id) =>
-      (db.select(db.transcriptRevisions)..where((r) => r.id.equals(id)))
-          .getSingle();
+  Future<TranscriptRevision> revisionById(String id) => (db.select(
+    db.transcriptRevisions,
+  )..where((r) => r.id.equals(id))).getSingle();
 
-  test('enqueue -> worker -> ready with rawText, modelId and language',
-      () async {
-    final staged = await recordedNote();
-    final id = await queue.enqueue(staged.noteId, staged.assetId);
-    await queue.idle();
+  test(
+    'enqueue -> worker -> ready with rawText, modelId and language',
+    () async {
+      final staged = await recordedNote();
+      final id = await queue.enqueue(staged.noteId, staged.assetId);
+      await queue.idle();
 
-    final revision = await revisionById(id);
-    expect(revision.state, TranscriptState.ready);
-    expect(revision.rawText, 'распознанный текст');
-    expect(revision.modelId, 'fake-model');
-    expect(revision.language, 'ru');
-    expect(revision.errorMessage, isNull);
-    expect(recognizer.lastPath, contains(staged.assetId));
-  });
+      final revision = await revisionById(id);
+      expect(revision.state, TranscriptState.ready);
+      expect(revision.rawText, 'распознанный текст');
+      expect(revision.modelId, 'fake-model');
+      expect(revision.language, 'ru');
+      expect(revision.errorMessage, isNull);
+      expect(recognizer.lastPath, contains(staged.assetId));
+    },
+  );
 
-  test('engine failure -> failed with errorMessage; retry creates new revision',
-      () async {
-    final staged = await recordedNote();
-    recognizer.nextError = Exception('boom');
-    final firstId = await queue.enqueue(staged.noteId, staged.assetId);
-    await queue.idle();
+  test(
+    'engine failure -> failed with errorMessage; retry creates new revision',
+    () async {
+      final staged = await recordedNote();
+      recognizer.nextError = Exception('boom');
+      final firstId = await queue.enqueue(staged.noteId, staged.assetId);
+      await queue.idle();
 
-    final failed = await revisionById(firstId);
-    expect(failed.state, TranscriptState.failed);
-    expect(failed.errorMessage, contains('boom'));
+      final failed = await revisionById(firstId);
+      expect(failed.state, TranscriptState.failed);
+      expect(failed.errorMessage, contains('boom'));
 
-    recognizer.nextError = null;
-    final secondId = await queue.retry(firstId);
-    expect(secondId, isNot(firstId));
-    await queue.idle();
+      recognizer.nextError = null;
+      final secondId = await queue.retry(firstId);
+      expect(secondId, isNot(firstId));
+      await queue.idle();
 
-    expect((await revisionById(firstId)).state, TranscriptState.failed,
-        reason: 'старая ревизия не изменяется');
-    expect((await revisionById(secondId)).state, TranscriptState.ready);
-  });
+      expect(
+        (await revisionById(firstId)).state,
+        TranscriptState.failed,
+        reason: 'старая ревизия не изменяется',
+      );
+      expect((await revisionById(secondId)).state, TranscriptState.ready);
+    },
+  );
 
   test('retry is rejected for non-terminal revisions', () async {
     final staged = await recordedNote();
@@ -163,52 +186,58 @@ void main() {
     await expectLater(queue.retry(id), throwsStateError);
   });
 
-  test('no model -> waitingForModel without recognition; kick requeues',
-      () async {
-    models.dir = null;
-    final staged = await recordedNote();
-    final id = await queue.enqueue(staged.noteId, staged.assetId);
-    await queue.idle();
+  test(
+    'no model -> waitingForModel without recognition; kick requeues',
+    () async {
+      models.dir = null;
+      final staged = await recordedNote();
+      final id = await queue.enqueue(staged.noteId, staged.assetId);
+      await queue.idle();
 
-    expect((await revisionById(id)).state, TranscriptState.waitingForModel);
-    expect(recognizer.calls, 0, reason: 'без модели распознавание не идёт');
+      expect((await revisionById(id)).state, TranscriptState.waitingForModel);
+      expect(recognizer.calls, 0, reason: 'без модели распознавание не идёт');
 
-    models.dir = 'model-dir';
-    await queue.kick();
-    await queue.idle();
-    expect((await revisionById(id)).state, TranscriptState.ready);
-  });
+      models.dir = 'model-dir';
+      await queue.kick();
+      await queue.idle();
+      expect((await revisionById(id)).state, TranscriptState.ready);
+    },
+  );
 
-  test('recoverOnStartup returns crashed recognizing jobs to the pipeline',
-      () async {
-    final staged = await recordedNote();
-    final id = ids.newId();
-    await db.into(db.transcriptRevisions).insert(
-          TranscriptRevisionsCompanion.insert(
-            id: id,
-            noteId: staged.noteId,
-            audioAssetId: staged.assetId,
-            engineId: 'fake',
-            modelId: '',
-            language: '',
-            state: TranscriptState.recognizing,
-            createdAtUtc: clock.nowUtcMillis(),
-          ),
-        );
+  test(
+    'recoverOnStartup returns crashed recognizing jobs to the pipeline',
+    () async {
+      final staged = await recordedNote();
+      final id = ids.newId();
+      await db
+          .into(db.transcriptRevisions)
+          .insert(
+            TranscriptRevisionsCompanion.insert(
+              id: id,
+              noteId: staged.noteId,
+              audioAssetId: staged.assetId,
+              engineId: 'fake',
+              modelId: '',
+              language: '',
+              state: TranscriptState.recognizing,
+              createdAtUtc: clock.nowUtcMillis(),
+            ),
+          );
 
-    // Без модели: recognizing -> queued -> waitingForModel, то есть job
-    // снова в конвейере, а не завис навсегда.
-    models.dir = null;
-    await queue.recoverOnStartup();
-    await queue.idle();
-    expect((await revisionById(id)).state, TranscriptState.waitingForModel);
+      // Без модели: recognizing -> queued -> waitingForModel, то есть job
+      // снова в конвейере, а не завис навсегда.
+      models.dir = null;
+      await queue.recoverOnStartup();
+      await queue.idle();
+      expect((await revisionById(id)).state, TranscriptState.waitingForModel);
 
-    // С моделью восстановленная job доводится до ready.
-    models.dir = 'model-dir';
-    await queue.kick();
-    await queue.idle();
-    expect((await revisionById(id)).state, TranscriptState.ready);
-  });
+      // С моделью восстановленная job доводится до ready.
+      models.dir = 'model-dir';
+      await queue.kick();
+      await queue.idle();
+      expect((await revisionById(id)).state, TranscriptState.ready);
+    },
+  );
 
   test('cancel queued -> cancelled and worker skips it', () async {
     final staged = await recordedNote();
@@ -227,23 +256,28 @@ void main() {
     expect(recognizer.calls, 1, reason: 'отменённая job не распознаётся');
   });
 
-  test('stale-guard: finished result of a cancelled job keeps cancelled',
-      () async {
-    final staged = await recordedNote();
-    recognizer.gate = Completer<void>();
-    final id = await queue.enqueue(staged.noteId, staged.assetId);
-    await recognizer.started.future;
-    expect((await revisionById(id)).state, TranscriptState.recognizing);
+  test(
+    'stale-guard: finished result of a cancelled job keeps cancelled',
+    () async {
+      final staged = await recordedNote();
+      recognizer.gate = Completer<void>();
+      final id = await queue.enqueue(staged.noteId, staged.assetId);
+      await recognizer.started.future;
+      expect((await revisionById(id)).state, TranscriptState.recognizing);
 
-    expect(await queue.cancel(id), isTrue);
-    recognizer.gate!.complete(); // изолят «дорабатывает» и приносит результат
-    await queue.idle();
+      expect(await queue.cancel(id), isTrue);
+      recognizer.gate!.complete(); // изолят «дорабатывает» и приносит результат
+      await queue.idle();
 
-    final revision = await revisionById(id);
-    expect(revision.state, TranscriptState.cancelled);
-    expect(revision.rawText, isEmpty,
-        reason: 'результат отменённой job отброшен');
-  });
+      final revision = await revisionById(id);
+      expect(revision.state, TranscriptState.cancelled);
+      expect(
+        revision.rawText,
+        isEmpty,
+        reason: 'результат отменённой job отброшен',
+      );
+    },
+  );
 
   test('cancel of a terminal revision is a no-op', () async {
     final staged = await recordedNote();

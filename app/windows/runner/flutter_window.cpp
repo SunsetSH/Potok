@@ -1,8 +1,32 @@
 #include "flutter_window.h"
 
 #include <optional>
+#include <string>
 
 #include "flutter/generated_plugin_registrant.h"
+
+namespace {
+
+std::wstring WideFromUtf8(const std::string& value) {
+  if (value.empty()) {
+    return std::wstring();
+  }
+  const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                       value.data(),
+                                       static_cast<int>(value.size()), nullptr, 0);
+  if (size <= 0) {
+    return std::wstring();
+  }
+  std::wstring result(size, L'\0');
+  if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
+                          static_cast<int>(value.size()), result.data(), size) ==
+      0) {
+    return std::wstring();
+  }
+  return result;
+}
+
+}  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -25,6 +49,68 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  recording_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(), "dev.potok/recording",
+          &flutter::StandardMethodCodec::GetInstance());
+  recording_channel_->SetMethodCallHandler(
+      [](const flutter::MethodCall<flutter::EncodableValue>& call,
+         std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+        const auto* arguments =
+            std::get_if<flutter::EncodableMap>(call.arguments());
+        if (call.method_name() == "getFreeBytes") {
+          if (arguments == nullptr) {
+            result->Error("invalid_argument", "arguments are required");
+            return;
+          }
+          const auto path_it = arguments->find(flutter::EncodableValue("path"));
+          if (path_it == arguments->end()) {
+            result->Error("invalid_argument", "path is required");
+            return;
+          }
+          const auto* utf8_path = std::get_if<std::string>(&path_it->second);
+          if (utf8_path == nullptr) {
+            result->Error("invalid_argument", "path must be a string");
+            return;
+          }
+          const std::wstring path = WideFromUtf8(*utf8_path);
+          ULARGE_INTEGER available;
+          if (path.empty() ||
+              !GetDiskFreeSpaceExW(path.c_str(), &available, nullptr, nullptr)) {
+            result->Error("storage_unavailable",
+                          "managed storage is unavailable");
+            return;
+          }
+          result->Success(flutter::EncodableValue(
+              static_cast<int64_t>(available.QuadPart)));
+          return;
+        }
+        if (call.method_name() == "setRecordingActive") {
+          bool active = false;
+          if (arguments != nullptr) {
+            const auto active_it =
+                arguments->find(flutter::EncodableValue("active"));
+            if (active_it != arguments->end()) {
+              if (const auto* value =
+                      std::get_if<bool>(&active_it->second)) {
+                active = *value;
+              }
+            }
+          }
+          const EXECUTION_STATE state = active
+              ? static_cast<EXECUTION_STATE>(ES_CONTINUOUS | ES_SYSTEM_REQUIRED |
+                                             ES_DISPLAY_REQUIRED)
+              : ES_CONTINUOUS;
+          if (SetThreadExecutionState(state) == 0) {
+            result->Error("recording_contract_failed",
+                          "could not update sleep policy");
+          } else {
+            result->Success();
+          }
+          return;
+        }
+        result->NotImplemented();
+      });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -41,6 +127,8 @@ bool FlutterWindow::OnCreate() {
 
 void FlutterWindow::OnDestroy() {
   if (flutter_controller_) {
+    SetThreadExecutionState(ES_CONTINUOUS);
+    recording_channel_.reset();
     flutter_controller_ = nullptr;
   }
 

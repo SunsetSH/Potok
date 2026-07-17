@@ -41,3 +41,6 @@ enum TranscriptState {
   cancelled,
   waitingForModel,
 }
+
+/// Сессия после process death может быть только paused, но не active.
+enum SessionState { active, paused, completed }
