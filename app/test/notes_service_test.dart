@@ -283,6 +283,61 @@ void main() {
     });
   });
 
+  group('list filters (WP-02)', () {
+    Future<void> insertProject(String id, String name) =>
+        db.into(db.projects).insert(ProjectsCompanion.insert(
+              id: id,
+              name: name,
+              colorArgb: 0xFF4E75DB,
+              createdAtUtc: 0,
+              updatedAtUtc: 0,
+            ));
+
+    Future<Note> noteById(String id) async =>
+        (await service.watchNotes().first).firstWhere((n) => n.id == id);
+
+    test('watchNotes(projectId) and onlyNoProject split notes by project',
+        () async {
+      await insertProject('p1', 'Проект');
+      final inProjectId = await service.createTextNote('в проекте');
+      await service.createTextNote('без проекта');
+      await service.moveToProject(await noteById(inProjectId), 'p1');
+
+      final inProject = await service.watchNotes(projectId: 'p1').first;
+      expect(inProject.map((n) => n.id), [inProjectId]);
+
+      final noProject =
+          await service.watchNotes(onlyNoProject: true).first;
+      expect(noProject.single.documentPlainText, 'без проекта');
+    });
+
+    test('watchNotes(onlyFavorites) follows the favorite flag', () async {
+      final favoriteId = await service.createTextNote('избранная');
+      await service.createTextNote('обычная');
+      await service.setFavorite(await noteById(favoriteId), true);
+
+      var favorites = await service.watchNotes(onlyFavorites: true).first;
+      expect(favorites.single.id, favoriteId);
+
+      await service.setFavorite(await noteById(favoriteId), false);
+      favorites = await service.watchNotes(onlyFavorites: true).first;
+      expect(favorites, isEmpty);
+    });
+
+    test('filtered lists exclude trashed notes', () async {
+      await insertProject('p2', 'Другой');
+      final id = await service.createTextNote('в корзину');
+      await service.moveToProject(await noteById(id), 'p2');
+      await service.setFavorite(await noteById(id), true);
+      await service.moveToTrash(await noteById(id));
+
+      expect(await service.watchNotes(projectId: 'p2').first, isEmpty);
+      expect(await service.watchNotes(onlyFavorites: true).first, isEmpty);
+      final trash = await service.watchTrash().first;
+      expect(trash.map((n) => n.id), contains(id));
+    });
+  });
+
   group('schema invariants (WP-01)', () {
     test('duplicate global tag name is rejected by partial unique index',
         () async {

@@ -31,13 +31,30 @@ class NotesService {
 
   // ---------- Queries ----------
 
-  Stream<List<Note>> watchNotes() {
+  /// Живые заметки. Фильтры разделов (WP-02): проект, «Без проекта»,
+  /// «Избранное». [projectId] и [onlyNoProject] взаимоисключающие.
+  Stream<List<Note>> watchNotes({
+    String? projectId,
+    bool onlyNoProject = false,
+    bool onlyFavorites = false,
+  }) {
+    assert(projectId == null || !onlyNoProject,
+        'projectId and onlyNoProject are mutually exclusive');
     final query = db.select(db.notes)
-      ..where((n) => n.deletedAtUtc.isNull())
-      ..orderBy([
-        (n) => OrderingTerm.desc(n.createdAtUtc),
-        (n) => OrderingTerm.desc(n.id), // stable tie-breaker (FR-LST-001)
-      ]);
+      ..where((n) => n.deletedAtUtc.isNull());
+    if (projectId != null) {
+      query.where((n) => n.projectId.equals(projectId));
+    }
+    if (onlyNoProject) {
+      query.where((n) => n.projectId.isNull());
+    }
+    if (onlyFavorites) {
+      query.where((n) => n.isFavorite.equals(true));
+    }
+    query.orderBy([
+      (n) => OrderingTerm.desc(n.createdAtUtc),
+      (n) => OrderingTerm.desc(n.id), // stable tie-breaker (FR-LST-001)
+    ]);
     return query.watch();
   }
 

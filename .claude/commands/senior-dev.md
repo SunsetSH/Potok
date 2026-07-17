@@ -42,7 +42,3 @@ Apply these rules to every code change. They are stack-independent; use the idio
 - Keep names precise; remove dead code; avoid duplication that can drift. Comments explain non-obvious decisions and constraints, not syntax.
 - Add or update focused automated tests for changed behavior, especially invariants, failures, retries/cancellation, persistence, and boundary cases.
 - Run the relevant formatter, static analysis, build, and tests. Do not call work complete while a new warning, failed check, or known regression remains unexplained.
-
-## .NET MAUI + C# + XAML mapping
-
-For this project, prefer `async`/`await` with `CancellationToken`, DI, nullable reference types, `IDisposable`/`IAsyncDisposable`, platform secure storage, and the MAUI dispatcher for UI-thread updates. Keep View/XAML bindings free of persistence and business logic; place platform-specific code behind application/infrastructure boundaries
