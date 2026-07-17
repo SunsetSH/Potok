@@ -5,12 +5,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../application/backup_service.dart';
 import '../application/drafts_service.dart';
+import '../application/export_service.dart';
 import '../application/images_service.dart';
 import '../application/media_repair_service.dart';
 import '../application/note_list_query.dart';
 import '../application/notes_service.dart';
 import '../application/projects_service.dart';
+import '../application/restore_service.dart';
 import '../application/sessions_service.dart';
 import '../application/settings_service.dart';
 import '../application/smart_views_service.dart';
@@ -252,6 +255,31 @@ final storageUsageProvider = FutureProvider.autoDispose<StorageUsage>((
     platform: ref.watch(recordingPlatformProvider),
   );
   return service.snapshot();
+});
+
+// ---------- WP-06: backup/restore/export ----------
+
+final backupServiceProvider = FutureProvider<BackupService>((ref) async {
+  return BackupService(
+    db: ref.watch(databaseProvider),
+    media: await ref.watch(mediaStoreProvider.future),
+    clock: ref.watch(clockProvider),
+  );
+});
+
+final restoreServiceProvider = FutureProvider<RestoreService>((ref) async {
+  final support = await getApplicationSupportDirectory();
+  return RestoreService(
+    supportDir: support,
+    currentSchemaVersion: ref.watch(databaseProvider).schemaVersion,
+  );
+});
+
+final exportServiceProvider = FutureProvider<ExportService>((ref) async {
+  return ExportService(
+    db: ref.watch(databaseProvider),
+    notes: await ref.watch(notesServiceProvider.future),
+  );
 });
 
 // ---------- Тема ----------

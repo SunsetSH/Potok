@@ -8,6 +8,7 @@ import '../application/notes_service.dart';
 import '../application/settings_service.dart';
 import '../infrastructure/asr/model_manager.dart';
 import '../infrastructure/db/database.dart';
+import 'data_section.dart';
 import 'move_note.dart';
 import 'providers.dart';
 import 'session_history.dart';
@@ -776,6 +777,19 @@ Future<void> showAppearanceDialog(BuildContext context, WidgetRef ref) {
                     ),
                   ),
                   const _AsrSettingsSection(),
+                  Divider(color: c.line, height: 24),
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      'Данные',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: c.muted,
+                      ),
+                    ),
+                  ),
+                  const DataSettingsSection(),
                 ],
               ),
             ),
