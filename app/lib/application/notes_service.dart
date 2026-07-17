@@ -4,7 +4,6 @@ import '../domain/clock.dart';
 import '../domain/document.dart';
 import '../domain/id_generator.dart';
 import '../domain/types.dart';
-import '../infrastructure/asr/local_speech_recognizer.dart';
 import '../infrastructure/db/database.dart';
 import '../infrastructure/media_store.dart';
 import 'tags_service.dart';
@@ -15,7 +14,6 @@ import 'tags_service.dart';
 class NotesService {
   final AppDatabase db;
   final MediaStore media;
-  final LocalSpeechRecognizer recognizer;
   final Clock clock;
   final IdGenerator ids;
   final String deviceId;
@@ -23,7 +21,6 @@ class NotesService {
   NotesService({
     required this.db,
     required this.media,
-    required this.recognizer,
     required this.clock,
     required this.ids,
     required this.deviceId,
@@ -227,54 +224,6 @@ class NotesService {
       await (db.delete(db.notes)..where((n) => n.id.equals(staged.noteId)))
           .go();
     });
-  }
-
-  /// Каждая попытка ASR — новая TranscriptRevision; текст пользователя здесь
-  /// не изменяется (FR-ASR-003/004).
-  Future<TranscriptRevision> transcribe(
-    String noteId,
-    String assetId, {
-    String languageHint = '',
-  }) async {
-    final asset = await (db.select(db.mediaAssets)
-          ..where((a) => a.id.equals(assetId)))
-        .getSingle();
-    final revisionId = ids.newId();
-    await db.into(db.transcriptRevisions).insert(
-          TranscriptRevisionsCompanion.insert(
-            id: revisionId,
-            noteId: noteId,
-            audioAssetId: assetId,
-            engineId: recognizer.engineId,
-            modelId: '',
-            language: languageHint,
-            state: TranscriptState.recognizing,
-            createdAtUtc: clock.nowUtcMillis(),
-          ),
-        );
-    try {
-      final result = await recognizer.transcribeFile(
-        media.absolutePath(asset.relativePath),
-        languageHint: languageHint,
-      );
-      await (db.update(db.transcriptRevisions)
-            ..where((r) => r.id.equals(revisionId)))
-          .write(TranscriptRevisionsCompanion(
-        rawText: Value(result.text),
-        modelId: Value(result.modelId),
-        language: Value(result.language),
-        state: const Value(TranscriptState.ready),
-      ));
-    } on ModelUnavailableException {
-      await _markRevision(revisionId, TranscriptState.waitingForModel, null);
-      rethrow;
-    } catch (e) {
-      await _markRevision(revisionId, TranscriptState.failed, e.toString());
-      rethrow;
-    }
-    return (db.select(db.transcriptRevisions)
-          ..where((r) => r.id.equals(revisionId)))
-        .getSingle();
   }
 
   /// Явное принятие: расшифровка добавляется параграфом, существующий текст
@@ -540,18 +489,6 @@ class NotesService {
           operationKind: operationKind,
           occurredAtUtc: at,
         ));
-  }
-
-  Future<void> _markRevision(
-    String id,
-    TranscriptState state,
-    String? error,
-  ) async {
-    await (db.update(db.transcriptRevisions)..where((r) => r.id.equals(id)))
-        .write(TranscriptRevisionsCompanion(
-      state: Value(state),
-      errorMessage: Value(error),
-    ));
   }
 }
 

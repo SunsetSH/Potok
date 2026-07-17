@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../application/settings_service.dart';
+import '../infrastructure/asr/model_manager.dart';
 import '../infrastructure/db/database.dart';
 import 'providers.dart';
 import 'theme.dart';
@@ -391,7 +392,7 @@ Future<void> showCreateProjectDialog(BuildContext context, WidgetRef ref) {
   ).whenComplete(controller.dispose);
 }
 
-/// «Настройки → Внешний вид»: выбор темы, сохранение в app_meta.
+/// «Настройки»: выбор темы (app_meta) и секция распознавания речи.
 Future<void> showAppearanceDialog(BuildContext context, WidgetRef ref) {
   return showDialog<void>(
     context: context,
@@ -402,12 +403,22 @@ Future<void> showAppearanceDialog(BuildContext context, WidgetRef ref) {
           final current = dialogRef.watch(themeIdProvider).value ??
               PotokThemeId.studio;
           return AlertDialog(
-            title: const Text('Настройки · Внешний вид'),
+            title: const Text('Настройки'),
+            scrollable: true,
             content: SizedBox(
               width: 380,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text('Внешний вид',
+                        style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            color: c.muted)),
+                  ),
                   for (final id in PotokThemeId.values)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 10),
@@ -461,6 +472,16 @@ Future<void> showAppearanceDialog(BuildContext context, WidgetRef ref) {
                         ),
                       ),
                     ),
+                  Divider(color: c.line, height: 24),
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text('Распознавание речи',
+                        style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            color: c.muted)),
+                  ),
+                  const _AsrSettingsSection(),
                 ],
               ),
             ),
@@ -475,4 +496,124 @@ Future<void> showAppearanceDialog(BuildContext context, WidgetRef ref) {
       );
     },
   );
+}
+
+/// Секция «Распознавание речи»: активная модель и установка пака из папки.
+class _AsrSettingsSection extends ConsumerStatefulWidget {
+  const _AsrSettingsSection();
+
+  @override
+  ConsumerState<_AsrSettingsSection> createState() =>
+      _AsrSettingsSectionState();
+}
+
+class _AsrSettingsSectionState extends ConsumerState<_AsrSettingsSection> {
+  final _pathController = TextEditingController();
+  String? _error;
+  bool _busy = false;
+
+  @override
+  void dispose() {
+    _pathController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _install() async {
+    final path = _pathController.text.trim();
+    if (path.isEmpty) {
+      setState(() => _error = 'Укажите путь к папке модели');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final manager = await ref.read(modelManagerProvider.future);
+      final modelId = await manager.installFromDirectory(path);
+      await manager.activate(modelId);
+      final queue = await ref.read(transcriptionQueueProvider.future);
+      await queue.kick();
+      if (!mounted) return;
+      _pathController.clear();
+      setState(() => _busy = false);
+    } on ModelPackException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = e.message;
+      });
+    } catch (e) {
+      debugPrint('model install failed: ${e.runtimeType}');
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'Не удалось установить модель';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = PotokColors.of(context);
+    final active = ref.watch(activeAsrModelProvider).value;
+    final activeLabel = active == null
+        ? 'Модель не установлена'
+        : '${active.modelId} · ${active.languages.join(', ')}';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(
+              active == null
+                  ? Icons.mic_off_outlined
+                  : Icons.mic_none_rounded,
+              size: 16,
+              color: active == null ? c.muted : c.decision,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                activeLabel,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 12, color: c.text),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        TextField(
+          controller: _pathController,
+          enabled: !_busy,
+          style: TextStyle(fontSize: 12, color: c.text),
+          decoration: InputDecoration(
+            hintText: 'Путь к папке model pack',
+            hintStyle: TextStyle(fontSize: 12, color: c.muted),
+            errorText: _error,
+            errorMaxLines: 2,
+            isDense: true,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(c.radiusSmall),
+            ),
+          ),
+          onSubmitted: (_) => _install(),
+        ),
+        const SizedBox(height: 8),
+        Align(
+          alignment: Alignment.centerRight,
+          child: FilledButton(
+            onPressed: _busy ? null : _install,
+            child: _busy
+                ? const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Text('Установить из папки'),
+          ),
+        ),
+      ],
+    );
+  }
 }

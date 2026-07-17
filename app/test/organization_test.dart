@@ -11,21 +11,8 @@ import 'package:potok/domain/clock.dart';
 import 'package:potok/domain/document.dart';
 import 'package:potok/domain/id_generator.dart';
 import 'package:potok/domain/types.dart';
-import 'package:potok/infrastructure/asr/local_speech_recognizer.dart';
 import 'package:potok/infrastructure/db/database.dart';
 import 'package:potok/infrastructure/media_store.dart';
-
-class _NoopRecognizer implements LocalSpeechRecognizer {
-  @override
-  String get engineId => 'noop';
-
-  @override
-  Future<TranscriptionResult> transcribeFile(
-    String audioPath, {
-    String languageHint = '',
-  }) =>
-      throw UnimplementedError();
-}
 
 void main() {
   late AppDatabase db;
@@ -44,7 +31,6 @@ void main() {
     notes = NotesService(
       db: db,
       media: MediaStore(temp),
-      recognizer: _NoopRecognizer(),
       clock: clock,
       ids: ids,
       deviceId: 'device-test',

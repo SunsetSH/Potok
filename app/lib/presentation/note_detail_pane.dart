@@ -6,9 +6,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../application/notes_service.dart';
 import '../domain/document.dart';
 import '../domain/types.dart';
-import '../infrastructure/asr/local_speech_recognizer.dart';
 import '../infrastructure/db/database.dart';
 import 'providers.dart';
+import 'sidebar.dart';
 import 'theme.dart';
 
 enum _SaveStatus { saved, saving, error }
@@ -543,41 +543,45 @@ class _TagsRow extends ConsumerWidget {
   }
 }
 
-/// Аудиоблок: исходная запись + запуск ASR + ревизии с «Принять».
-class _AudioSection extends ConsumerStatefulWidget {
+/// Аудиоблок: исходная запись + постановка ASR в очередь + ревизии.
+/// Прогресс job'а виден через состояния TranscriptRevision (очередь durable,
+/// локального «идёт расшифровка» флага нет).
+class _AudioSection extends ConsumerWidget {
   final Note note;
   const _AudioSection({required this.note});
 
-  @override
-  ConsumerState<_AudioSection> createState() => _AudioSectionState();
-}
-
-class _AudioSectionState extends ConsumerState<_AudioSection> {
-  bool _transcribing = false;
-
-  Future<void> _transcribe(String assetId) async {
-    setState(() => _transcribing = true);
+  Future<void> _enqueue(
+      BuildContext context, WidgetRef ref, String assetId) async {
     final messenger = ScaffoldMessenger.of(context);
     try {
-      final service = await ref.read(notesServiceProvider.future);
-      await service.transcribe(widget.note.id, assetId);
-    } on ModelUnavailableException {
-      messenger.showSnackBar(const SnackBar(
-          content: Text('Модель распознавания не установлена')));
+      final queue = await ref.read(transcriptionQueueProvider.future);
+      await queue.enqueue(note.id, assetId);
     } catch (e) {
-      debugPrint('transcribe failed: ${e.runtimeType}');
-      messenger.showSnackBar(
-          const SnackBar(content: Text('Расшифровка не удалась')));
-    } finally {
-      if (mounted) setState(() => _transcribing = false);
+      debugPrint('enqueue transcription failed: ${e.runtimeType}');
+      messenger.showSnackBar(const SnackBar(
+          content: Text('Не удалось поставить расшифровку в очередь')));
     }
   }
 
-  Future<void> _accept(String revisionId) async {
+  Future<void> _retry(
+      BuildContext context, WidgetRef ref, String revisionId) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final queue = await ref.read(transcriptionQueueProvider.future);
+      await queue.retry(revisionId);
+    } catch (e) {
+      debugPrint('retry transcription failed: ${e.runtimeType}');
+      messenger.showSnackBar(
+          const SnackBar(content: Text('Не удалось повторить расшифровку')));
+    }
+  }
+
+  Future<void> _accept(
+      BuildContext context, WidgetRef ref, String revisionId) async {
     final messenger = ScaffoldMessenger.of(context);
     try {
       final service = await ref.read(notesServiceProvider.future);
-      await service.acceptTranscript(widget.note.id, revisionId);
+      await service.acceptTranscript(note.id, revisionId);
     } on StateError {
       messenger.showSnackBar(const SnackBar(
           content: Text('Заметка изменилась — повторите принятие')));
@@ -589,14 +593,16 @@ class _AudioSectionState extends ConsumerState<_AudioSection> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final c = PotokColors.of(context);
-    final asset =
-        ref.watch(readyAudioAssetProvider(widget.note.id)).value;
-    final revisions =
-        ref.watch(revisionsProvider(widget.note.id)).value ??
-            const <TranscriptRevision>[];
+    final asset = ref.watch(readyAudioAssetProvider(note.id)).value;
+    final revisions = ref.watch(revisionsProvider(note.id)).value ??
+        const <TranscriptRevision>[];
     if (asset == null) return const SizedBox.shrink();
+
+    final inFlight = revisions.any((r) =>
+        r.state == TranscriptState.queued ||
+        r.state == TranscriptState.recognizing);
 
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 8, 8, 8),
@@ -616,21 +622,20 @@ class _AudioSectionState extends ConsumerState<_AudioSection> {
                   style: TextStyle(fontSize: 12, color: c.muted),
                 ),
               ),
-              if (_transcribing)
-                const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              else
-                TextButton(
-                  onPressed: () => _transcribe(asset.id),
-                  child: const Text('Расшифровать'),
-                ),
+              TextButton(
+                onPressed:
+                    inFlight ? null : () => _enqueue(context, ref, asset.id),
+                child: const Text('Расшифровать'),
+              ),
             ],
           ),
           for (final revision in revisions)
-            _RevisionTile(revision: revision, onAccept: _accept),
+            _RevisionTile(
+              revision: revision,
+              onAccept: (id) => _accept(context, ref, id),
+              onRetry: (id) => _retry(context, ref, id),
+              onConfigure: () => showAppearanceDialog(context, ref),
+            ),
         ],
       ),
     );
@@ -640,8 +645,31 @@ class _AudioSectionState extends ConsumerState<_AudioSection> {
 class _RevisionTile extends StatelessWidget {
   final TranscriptRevision revision;
   final Future<void> Function(String revisionId) onAccept;
+  final Future<void> Function(String revisionId) onRetry;
+  final VoidCallback onConfigure;
 
-  const _RevisionTile({required this.revision, required this.onAccept});
+  const _RevisionTile({
+    required this.revision,
+    required this.onAccept,
+    required this.onRetry,
+    required this.onConfigure,
+  });
+
+  Widget _statusRow(PotokColors c, String label, Color labelColor,
+      {Widget? action}) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Row(
+        children: [
+          Expanded(
+            child:
+                Text(label, style: TextStyle(fontSize: 12, color: labelColor)),
+          ),
+          ?action,
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -685,19 +713,35 @@ class _RevisionTile extends StatelessWidget {
           child: LinearProgressIndicator(minHeight: 2),
         );
       case TranscriptState.failed:
-        return Padding(
-          padding: const EdgeInsets.only(top: 8),
-          child: Text('Ошибка расшифровки',
-              style: TextStyle(fontSize: 12, color: c.danger)),
-        );
-      case TranscriptState.waitingForModel:
-        return Padding(
-          padding: const EdgeInsets.only(top: 8),
-          child: Text('Модель не установлена',
-              style: TextStyle(fontSize: 12, color: c.muted)),
+        return _statusRow(
+          c,
+          'Ошибка расшифровки',
+          c.danger,
+          action: TextButton(
+            onPressed: () => onRetry(revision.id),
+            child: const Text('Повторить'),
+          ),
         );
       case TranscriptState.cancelled:
-        return const SizedBox.shrink();
+        return _statusRow(
+          c,
+          'Расшифровка отменена',
+          c.muted,
+          action: TextButton(
+            onPressed: () => onRetry(revision.id),
+            child: const Text('Повторить'),
+          ),
+        );
+      case TranscriptState.waitingForModel:
+        return _statusRow(
+          c,
+          'Модель не установлена',
+          c.muted,
+          action: TextButton(
+            onPressed: onConfigure,
+            child: const Text('Настроить'),
+          ),
+        );
     }
   }
 }

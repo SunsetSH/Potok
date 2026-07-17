@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:drift/drift.dart' show Value;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:potok/application/notes_service.dart';
@@ -7,52 +8,26 @@ import 'package:potok/domain/clock.dart';
 import 'package:potok/domain/document.dart';
 import 'package:potok/domain/id_generator.dart';
 import 'package:potok/domain/types.dart';
-import 'package:potok/infrastructure/asr/local_speech_recognizer.dart';
 import 'package:potok/infrastructure/db/database.dart';
 import 'package:potok/infrastructure/media_store.dart';
-
-class _FakeRecognizer implements LocalSpeechRecognizer {
-  String nextText = 'распознанный текст';
-  Object? nextError;
-
-  @override
-  String get engineId => 'fake';
-
-  @override
-  Future<TranscriptionResult> transcribeFile(
-    String audioPath, {
-    String languageHint = '',
-  }) async {
-    final error = nextError;
-    if (error != null) throw error;
-    return TranscriptionResult(
-      text: nextText,
-      modelId: 'fake-model',
-      language: 'ru',
-      audioDuration: const Duration(seconds: 1),
-      processingTime: const Duration(milliseconds: 10),
-    );
-  }
-}
 
 void main() {
   late AppDatabase db;
   late Directory temp;
-  late _FakeRecognizer recognizer;
   late NotesService service;
   late FixedClock clock;
+  late SequentialIdGenerator ids;
 
   setUp(() async {
     db = AppDatabase(NativeDatabase.memory());
     temp = await Directory.systemTemp.createTemp('potok_service_test');
-    recognizer = _FakeRecognizer();
     clock = FixedClock(DateTime.utc(2026, 7, 16, 12));
+    ids = SequentialIdGenerator();
     service = NotesService(
       db: db,
       media: MediaStore(temp),
-      recognizer: recognizer,
       clock: clock,
-      ids: SequentialIdGenerator(),
+      ids: ids,
       deviceId: 'device-test',
     );
   });
@@ -73,6 +48,30 @@ void main() {
       channels: 1,
     );
     return staged;
+  }
+
+  /// Готовая ревизия «из очереди» (сама очередь тестируется отдельно):
+  /// здесь проверяется только протокол принятия NotesService.
+  Future<String> insertReadyRevision(
+    String noteId,
+    String assetId, {
+    String text = 'распознанный текст',
+  }) async {
+    final id = ids.newId();
+    await db.into(db.transcriptRevisions).insert(
+          TranscriptRevisionsCompanion.insert(
+            id: id,
+            noteId: noteId,
+            audioAssetId: assetId,
+            engineId: 'fake',
+            modelId: 'fake-model',
+            language: 'ru',
+            rawText: Value(text),
+            state: TranscriptState.ready,
+            createdAtUtc: clock.nowUtcMillis(),
+          ),
+        );
+    return id;
   }
 
   group('text notes', () {
@@ -144,15 +143,14 @@ void main() {
     });
   });
 
-  group('transcription', () {
-    test('success creates ready revision; accept appends paragraph once',
+  group('transcription acceptance', () {
+    test('accept appends paragraph once and marks revision accepted',
         () async {
       final staged = await recordedNote();
-      final revision = await service.transcribe(staged.noteId, staged.assetId);
-      expect(revision.state, TranscriptState.ready);
-      expect(revision.rawText, 'распознанный текст');
+      final revisionId =
+          await insertReadyRevision(staged.noteId, staged.assetId);
 
-      await service.acceptTranscript(staged.noteId, revision.id);
+      await service.acceptTranscript(staged.noteId, revisionId);
       final note = (await service.watchNotes().first).single;
       expect(note.documentPlainText, 'распознанный текст');
       expect(note.revision, 2);
@@ -161,37 +159,25 @@ void main() {
       expect(revisions.single.acceptedAtUtc, isNotNull);
     });
 
-    test('engine failure records failed revision and rethrows', () async {
+    test('accept of a non-ready revision is rejected', () async {
       final staged = await recordedNote();
-      recognizer.nextError = Exception('boom');
+      final revisionId = ids.newId();
+      await db.into(db.transcriptRevisions).insert(
+            TranscriptRevisionsCompanion.insert(
+              id: revisionId,
+              noteId: staged.noteId,
+              audioAssetId: staged.assetId,
+              engineId: 'fake',
+              modelId: '',
+              language: '',
+              state: TranscriptState.queued,
+              createdAtUtc: clock.nowUtcMillis(),
+            ),
+          );
       await expectLater(
-        service.transcribe(staged.noteId, staged.assetId),
-        throwsException,
+        service.acceptTranscript(staged.noteId, revisionId),
+        throwsStateError,
       );
-      final revisions = await service.watchRevisions(staged.noteId).first;
-      expect(revisions.single.state, TranscriptState.failed);
-    });
-
-    test('missing model records waiting_for_model', () async {
-      final staged = await recordedNote();
-      recognizer.nextError = const ModelUnavailableException('no model');
-      await expectLater(
-        service.transcribe(staged.noteId, staged.assetId),
-        throwsA(isA<ModelUnavailableException>()),
-      );
-      final revisions = await service.watchRevisions(staged.noteId).first;
-      expect(revisions.single.state, TranscriptState.waitingForModel);
-    });
-
-    test('re-transcription creates a second revision, originals kept',
-        () async {
-      final staged = await recordedNote();
-      final first = await service.transcribe(staged.noteId, staged.assetId);
-      recognizer.nextText = 'другая модель';
-      final second = await service.transcribe(staged.noteId, staged.assetId);
-      final revisions = await service.watchRevisions(staged.noteId).first;
-      expect(revisions, hasLength(2));
-      expect({first.id, second.id}, hasLength(2));
     });
   });
 
@@ -248,9 +234,9 @@ void main() {
 
     test('accepted transcript adds edited event', () async {
       final staged = await recordedNote();
-      final revision =
-          await service.transcribe(staged.noteId, staged.assetId);
-      await service.acceptTranscript(staged.noteId, revision.id);
+      final revisionId =
+          await insertReadyRevision(staged.noteId, staged.assetId);
+      await service.acceptTranscript(staged.noteId, revisionId);
       final kinds = (await eventsOf(staged.noteId)).map((e) => e.kind);
       expect(kinds, contains(NoteEventKind.edited));
     });
@@ -268,9 +254,9 @@ void main() {
     test('search is case-insensitive and follows accepted transcript',
         () async {
       final staged = await recordedNote();
-      final revision =
-          await service.transcribe(staged.noteId, staged.assetId);
-      await service.acceptTranscript(staged.noteId, revision.id);
+      final revisionId =
+          await insertReadyRevision(staged.noteId, staged.assetId);
+      await service.acceptTranscript(staged.noteId, revisionId);
       final hits = await service.searchNotes('РАСПОЗНАННЫЙ');
       expect(hits.map((n) => n.id), contains(staged.noteId));
     });

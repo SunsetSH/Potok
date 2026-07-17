@@ -10,8 +10,10 @@ import '../application/notes_service.dart';
 import '../application/projects_service.dart';
 import '../application/settings_service.dart';
 import '../application/tags_service.dart';
+import '../application/transcription_queue.dart';
 import '../domain/clock.dart';
 import '../domain/id_generator.dart';
+import '../infrastructure/asr/model_manager.dart';
 import '../infrastructure/asr/sherpa_whisper_recognizer.dart';
 import '../infrastructure/db/database.dart';
 import '../infrastructure/db/device_identity.dart';
@@ -33,11 +35,47 @@ final mediaStoreProvider = FutureProvider<MediaStore>((ref) async {
   return MediaStore(root);
 });
 
-/// Dev-slice model location; the real model manager (packs, hashes,
-/// activation) is WP-03. Override with POTOK_ASR_MODEL_DIR.
-final asrModelDirProvider = Provider<String>((ref) {
-  return Platform.environment['POTOK_ASR_MODEL_DIR'] ??
-      r'C:\dev\models\sherpa-onnx-whisper-tiny';
+/// Менеджер model pack'ов (WP-03, ADR-002). Dev-fallback: env
+/// POTOK_ASR_MODEL_DIR указывает на папку модели без манифеста.
+final modelManagerProvider = FutureProvider<AsrModelManager>((ref) async {
+  final support = await getApplicationSupportDirectory();
+  final root = Directory(p.join(support.path, 'models'));
+  await root.create(recursive: true);
+  return AsrModelManager(
+    modelsRoot: root,
+    settings: ref.watch(settingsServiceProvider),
+    devFallbackDir: Platform.environment['POTOK_ASR_MODEL_DIR'],
+  );
+});
+
+/// Durable-очередь расшифровки; при создании возвращает в работу job'ы,
+/// зависшие после краха процесса.
+final transcriptionQueueProvider =
+    FutureProvider<TranscriptionQueue>((ref) async {
+  final queue = TranscriptionQueue(
+    db: ref.watch(databaseProvider),
+    media: await ref.watch(mediaStoreProvider.future),
+    models: await ref.watch(modelManagerProvider.future),
+    recognizerFactory: (modelDir) =>
+        SherpaWhisperRecognizer(modelDir: modelDir),
+    engineId: 'sherpa-onnx',
+    clock: ref.watch(clockProvider),
+    ids: ref.watch(idGeneratorProvider),
+  );
+  await queue.recoverOnStartup();
+  return queue;
+});
+
+/// Манифест активной модели для UI настроек (null — модель не установлена
+/// или пак битый; dev-fallback без манифеста здесь не показывается).
+final activeAsrModelProvider = StreamProvider<ModelManifest?>((ref) async* {
+  final manager = await ref.watch(modelManagerProvider.future);
+  yield* ref
+      .watch(settingsServiceProvider)
+      .watch(AsrModelManager.activeModelKey)
+      .asyncMap((id) => id == null
+          ? Future<ModelManifest?>.value()
+          : manager.installedManifest(id));
 });
 
 final clockProvider = Provider<Clock>((ref) => const SystemClock());
@@ -54,8 +92,6 @@ final notesServiceProvider = FutureProvider<NotesService>((ref) async {
   return NotesService(
     db: ref.watch(databaseProvider),
     media: await ref.watch(mediaStoreProvider.future),
-    recognizer:
-        SherpaWhisperRecognizer(modelDir: ref.watch(asrModelDirProvider)),
     clock: ref.watch(clockProvider),
     ids: ref.watch(idGeneratorProvider),
     deviceId: await ref.watch(deviceIdProvider.future),
