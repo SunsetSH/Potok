@@ -1,30 +1,49 @@
 import 'dart:async';
+import 'dart:typed_data';
 
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 
+import '../application/clipboard_image_reader.dart';
 import '../application/drafts_service.dart';
+import '../application/images_service.dart';
 import '../application/notes_service.dart';
 import '../application/settings_service.dart';
 import '../domain/document.dart';
 import '../domain/types.dart';
+import '../infrastructure/asr/sherpa_whisper_recognizer.dart';
 import '../infrastructure/audio_recorder.dart';
 import '../infrastructure/db/database.dart';
 import '../infrastructure/recording_platform.dart';
+import 'image_paste_intent.dart';
 import 'providers.dart';
+import 'snackbars.dart';
 import 'theme.dart';
 
 bool _captureOpen = false;
+Completer<void>? _captureClosed;
+
+/// Completes when an already visible capture route closes. Android launch
+/// intents use this to queue multiple external requests without dropping one.
+Future<void> waitForCaptureSheetClosed() =>
+    _captureClosed?.future ?? Future<void>.value();
 
 /// Quick capture (FAB, Ctrl+N): диалог на широком экране, шторка на узком.
 Future<void> showCaptureSheet(
   BuildContext context, {
-  String? sessionId,
   Note? attachToNote,
+  bool startWithAudio = false,
+  String? initialText,
+  String? initialProjectId,
+  SourceKind sourceKind = SourceKind.keyboard,
 }) async {
   if (_captureOpen) return;
   _captureOpen = true;
+  final closed = Completer<void>();
+  _captureClosed = closed;
   try {
     final wide = MediaQuery.sizeOf(context).width >= 900;
     if (wide) {
@@ -34,8 +53,11 @@ Future<void> showCaptureSheet(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 620),
             child: CaptureSheet(
-              sessionId: sessionId,
               attachToNote: attachToNote,
+              startWithAudio: startWithAudio,
+              initialText: initialText,
+              initialProjectId: initialProjectId,
+              sourceKind: sourceKind,
             ),
           ),
         ),
@@ -45,13 +67,18 @@ Future<void> showCaptureSheet(
         context: context,
         isScrollControlled: true,
         builder: (_) => CaptureSheet(
-          sessionId: sessionId,
           attachToNote: attachToNote,
+          startWithAudio: startWithAudio,
+          initialText: initialText,
+          initialProjectId: initialProjectId,
+          sourceKind: sourceKind,
         ),
       );
     }
   } finally {
     _captureOpen = false;
+    if (identical(_captureClosed, closed)) _captureClosed = null;
+    if (!closed.isCompleted) closed.complete();
   }
 }
 
@@ -59,26 +86,39 @@ Future<void> showCaptureSheet(
 /// Черновик durable: debounce 500 мс → DraftsService('quick-capture');
 /// закрытие крестиком/Esc черновик НЕ удаляет (FR-NOT-004).
 class CaptureSheet extends ConsumerStatefulWidget {
-  final String? sessionId;
   final Note? attachToNote;
 
-  const CaptureSheet({super.key, this.sessionId, this.attachToNote});
+  /// Ctrl+Shift+N: сразу начать запись аудио. Запись стартует только после
+  /// явного разрешения микрофона; без него шторка показывает ошибку.
+  final bool startWithAudio;
+  final String? initialText;
+  final String? initialProjectId;
+
+  /// Origin for a text note created from this surface. Audio started here is
+  /// classified as audio, except for the explicit Android widget origin.
+  final SourceKind sourceKind;
+
+  const CaptureSheet({
+    super.key,
+    this.attachToNote,
+    this.startWithAudio = false,
+    this.initialText,
+    this.initialProjectId,
+    this.sourceKind = SourceKind.keyboard,
+  });
 
   @override
   ConsumerState<CaptureSheet> createState() => _CaptureSheetState();
 }
 
 class _CaptureSheetState extends ConsumerState<CaptureSheet> {
-  static const _sampleRate = 44100;
   static const _minimumFreeBytesWhileRecording = 8 * 1024 * 1024;
 
-  String get _surfaceId => widget.sessionId == null
-      ? widget.attachToNote == null
-            ? 'quick-capture'
-            : 'audio-attachment-${widget.attachToNote!.id}'
-      : 'session-capture-${widget.sessionId}';
+  String get _surfaceId => widget.attachToNote == null
+      ? 'quick-capture'
+      : 'audio-attachment-${widget.attachToNote!.id}';
 
-  final _controller = TextEditingController();
+  late final TextEditingController _controller;
   late final AudioRecorderPort _recorder;
   late final RecordingPlatformPort _recordingPlatform;
 
@@ -87,21 +127,34 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
   Timer? _draftDebounce;
   bool _draftDirty = false;
   String? _projectId;
+  Note? _imageDraft;
 
   StagedRecording? _staged;
   DateTime? _recordingStarted;
   Timer? _ticker;
   StreamSubscription<RecorderLevel>? _levelSubscription;
+  StreamSubscription<Uint8List>? _pcmSubscription;
+  Timer? _liveTranscriptionTimer;
+  final List<int> _livePcmBytes = [];
+  String _liveTranscript = '';
+  String? _liveModelDir;
+  bool _liveDecodeInFlight = false;
+  int _liveGeneration = 0;
   Duration _elapsed = Duration.zero;
   Duration _recordingMaxDuration = const Duration(minutes: 30);
   int _recordingBitRate = 64000;
+  AudioRecordingFormat _recordingFormat = AudioRecordingFormat.m4a;
+  int _recordingSampleRate = 44100;
   double _level = 0;
+  final List<double> _levelHistory = List<double>.filled(36, 0);
   int? _freeBytes;
   bool _storageCheckInFlight = false;
   bool _recordingPaused = false;
   Future<void>? _recordingFinalization;
   String? _error;
   bool _savingNote = false;
+  bool _preparingAudio = false;
+  late bool _autoStartAudioPending = widget.startWithAudio;
 
   /// Сервис заметок для finalize в dispose (последнее значение из build).
   NotesService? _notesService;
@@ -109,6 +162,8 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
   @override
   void initState() {
     super.initState();
+    _controller = TextEditingController(text: widget.initialText ?? '');
+    _projectId = widget.initialProjectId;
     _recorder = ref.read(audioRecorderFactoryProvider)();
     _recordingPlatform = ref.read(recordingPlatformProvider);
     if (widget.attachToNote == null) _restoreDraft();
@@ -117,6 +172,8 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
   @override
   void dispose() {
     _ticker?.cancel();
+    _liveTranscriptionTimer?.cancel();
+    unawaited(_pcmSubscription?.cancel());
     unawaited(_levelSubscription?.cancel());
     _draftDebounce?.cancel();
     // PopScope не даёт обычно закрыть шторку во время записи.
@@ -154,20 +211,42 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
 
   Future<void> _restoreDraft() async {
     try {
+      final notes = await ref.read(notesServiceProvider.future);
+      final imageDraft = await notes.findImageNoteDraft();
       final draft = await _drafts.load(_surfaceId);
-      if (!mounted || draft == null) return;
-      var text = '';
-      try {
-        text = PotokDocument.decode(draft.documentJson).plainText;
-      } on FormatException {
-        debugPrint('quick capture draft decode failed');
-      }
-      setState(() {
-        if (_controller.text.isEmpty && text.isNotEmpty) {
-          _controller.text = text;
+      if (!mounted) return;
+      if (draft != null) {
+        var text = '';
+        try {
+          text = PotokDocument.decode(draft.documentJson).plainText;
+        } on FormatException {
+          debugPrint('quick capture draft decode failed');
         }
-        _projectId ??= draft.projectId;
-      });
+        setState(() {
+          final incoming = _controller.text.trim();
+          final restored = text.trim();
+          if (incoming.isEmpty && restored.isNotEmpty) {
+            _controller.text = restored;
+          } else if (incoming.isNotEmpty &&
+              restored.isNotEmpty &&
+              incoming != restored) {
+            // An external share must never overwrite a pre-existing durable
+            // quick-capture draft. Keep both in a deterministic order.
+            _controller.text = '$restored\n\n$incoming';
+          }
+          _projectId ??= draft.projectId;
+          _imageDraft = imageDraft;
+        });
+      } else if (imageDraft != null) {
+        setState(() {
+          _imageDraft = imageDraft;
+          _projectId ??= imageDraft.projectId;
+        });
+      }
+      if ((widget.initialText ?? '').trim().isNotEmpty) {
+        _draftDirty = true;
+        await _saveDraftNow();
+      }
     } catch (e) {
       debugPrint('draft load failed: ${e.runtimeType}');
     }
@@ -200,13 +279,10 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
     return 'Без проекта';
   }
 
-  Future<void> _saveText(
-    NotesService service,
-    List<Project> projects,
-    Session? session,
-  ) async {
+  Future<void> _saveText(NotesService service, List<Project> projects) async {
     final text = _controller.text.trim();
-    if (text.isEmpty) {
+    final imageDraft = _imageDraft;
+    if (text.isEmpty && imageDraft == null) {
       setState(() => _error = 'Сначала введите или надиктуйте текст');
       return;
     }
@@ -217,23 +293,46 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
     final messenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context);
     try {
-      final projectId = session?.projectId ?? _projectId;
-      await service.createTextNote(
-        text,
-        projectId: projectId,
-        sessionId: session?.id,
-      );
+      final projectId = _projectId;
+      if (imageDraft == null) {
+        await service.createTextNote(
+          text,
+          projectId: projectId,
+          sourceKind: widget.sourceKind,
+        );
+      } else {
+        final imageDocument = PotokDocument.decode(imageDraft.documentJson);
+        var document = PotokDocument.fromPlainText(text);
+        for (final op in imageDocument.deltaOps) {
+          final insert = op['insert'];
+          if (insert is! Map<String, Object?>) continue;
+          final uri = insert['image'];
+          if (uri is! String || !uri.startsWith('asset://')) continue;
+          final attributes = op['attributes'];
+          final alt = attributes is Map<String, Object?>
+              ? attributes['alt'] as String?
+              : null;
+          document = document.appendImage(
+            uri.substring('asset://'.length),
+            alt: alt ?? 'Изображение',
+          );
+        }
+        await service.publishImageNoteDraft(
+          imageDraft,
+          document,
+          projectId: projectId,
+        );
+        _imageDraft = null;
+      }
       _draftDebounce?.cancel();
       _draftDirty = false;
       await _drafts.clear(_surfaceId);
-      if (mounted) navigator.pop();
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(
-            'Заметка сохранена · ${_projectName(projects, projectId)}',
-          ),
-        ),
-      );
+      if (!mounted) return;
+      final message =
+          'Заметка сохранена · ${_projectName(projects, projectId)}';
+      final snackBar = compactSnackBar(context, message);
+      navigator.pop();
+      messenger.showSnackBar(snackBar);
     } catch (e) {
       debugPrint('quick capture save failed: ${e.runtimeType}');
       if (mounted) {
@@ -251,6 +350,7 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
     if (staged != null) {
       _ticker?.cancel();
       await _levelSubscription?.cancel();
+      await _stopLivePreview();
       await _recorder.cancel();
       await _recordingPlatform.setRecordingActive(false);
       await _notesService?.abortAudioNote(staged);
@@ -267,13 +367,121 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
         debugPrint('draft clear failed: ${e.runtimeType}');
       }
     }
+    final imageDraft = _imageDraft;
+    if (imageDraft != null) {
+      final images = await ref.read(imagesServiceProvider.future);
+      final notes = await ref.read(notesServiceProvider.future);
+      await images.discardDraftImages(imageDraft.id);
+      await notes.discardImageNoteDraft(imageDraft);
+      _imageDraft = null;
+    }
     if (mounted) navigator.pop();
+  }
+
+  Future<Note> _ensureImageDraft(NotesService notes) async {
+    final existing = _imageDraft;
+    if (existing != null) return existing;
+    final created = await notes.beginImageNoteDraft(
+      projectId: _projectId,
+      sourceKind: widget.sourceKind,
+    );
+    if (mounted) setState(() => _imageDraft = created);
+    return created;
+  }
+
+  Future<void> _attachPickedImage(NotesService notes) async {
+    const typeGroup = XTypeGroup(
+      label: 'Изображения',
+      extensions: ['jpg', 'jpeg', 'png', 'webp'],
+    );
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final picked = await openFile(acceptedTypeGroups: const [typeGroup]);
+      if (picked == null || !mounted) return;
+      final draft = await _ensureImageDraft(notes);
+      final images = await ref.read(imagesServiceProvider.future);
+      final asset = await images.attachImage(draft, picked.path);
+      final alt = p.basenameWithoutExtension(picked.path).trim();
+      await _appendDraftImage(
+        notes,
+        draft,
+        asset.id,
+        alt.isEmpty ? 'Изображение' : alt,
+      );
+    } on ImageAttachException catch (error) {
+      messenger.showSnackBar(PotokSnackBar(content: Text(error.message)));
+    } catch (error) {
+      debugPrint('capture image attach failed: ${error.runtimeType}');
+      messenger.showSnackBar(
+        PotokSnackBar(content: const Text('Не удалось прикрепить фото')),
+      );
+    }
+  }
+
+  Future<void> _appendDraftImage(
+    NotesService notes,
+    Note draft,
+    String assetId,
+    String alt,
+  ) async {
+    final document = PotokDocument.decode(
+      draft.documentJson,
+    ).appendImage(assetId, alt: alt);
+    await notes.updateImageNoteDraft(draft, document, projectId: _projectId);
+    final fresh = await notes.getNote(draft.id);
+    if (fresh != null && mounted) setState(() => _imageDraft = fresh);
+  }
+
+  Future<void> _pasteIntoCapture(NotesService notes) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final image = await ref.read(clipboardImageReaderProvider).readImage();
+      if (image != null) {
+        final draft = await _ensureImageDraft(notes);
+        final images = await ref.read(imagesServiceProvider.future);
+        final asset = await images.attachImageBytes(
+          draft,
+          image.bytes,
+          extension: image.extension,
+        );
+        await _appendDraftImage(
+          notes,
+          draft,
+          asset.id,
+          'Изображение из буфера',
+        );
+        return;
+      }
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      final text = data?.text;
+      if (text == null || text.isEmpty || !mounted) return;
+      final selection = _controller.selection;
+      final start = selection.isValid
+          ? selection.start
+          : _controller.text.length;
+      final end = selection.isValid ? selection.end : start;
+      _controller.value = TextEditingValue(
+        text: _controller.text.replaceRange(start, end, text),
+        selection: TextSelection.collapsed(offset: start + text.length),
+      );
+      _scheduleDraftSave();
+      setState(() {});
+    } on ImageAttachException catch (error) {
+      messenger.showSnackBar(PotokSnackBar(content: Text(error.message)));
+    } on ClipboardImageReadException catch (error) {
+      messenger.showSnackBar(PotokSnackBar(content: Text(error.message)));
+    } catch (error) {
+      debugPrint('capture clipboard paste failed: ${error.runtimeType}');
+      messenger.showSnackBar(
+        PotokSnackBar(content: const Text('Не удалось вставить изображение')),
+      );
+    }
   }
 
   // ---------- Запись аудио (логика WP-01 сохранена) ----------
 
-  Future<void> _toggleRecording(NotesService service, Session? session) async {
-    if (_recordingFinalization != null) return;
+  Future<void> _toggleRecording(NotesService service) async {
+    if (_recordingFinalization != null || _preparingAudio) return;
     final staged = _staged;
     if (staged != null) {
       await _finishRecording(staged, popAfter: true);
@@ -284,38 +492,71 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
       setState(() => _error = 'Нет доступа к микрофону');
       return;
     }
+    final settings = ref.read(settingsServiceProvider);
+    final storedBitRate = int.tryParse(
+      await settings.get(SettingsService.audioBitRateKey) ?? '',
+    );
+    final storedMaxMinutes = int.tryParse(
+      await settings.get(SettingsService.audioMaxMinutesKey) ?? '',
+    );
+    if (mounted) setState(() => _preparingAudio = true);
+    String? activeModelDir;
+    try {
+      activeModelDir = await ref.read(activeAsrModelDirectoryProvider.future);
+    } catch (error) {
+      debugPrint('ASR model bootstrap failed: ${error.runtimeType}');
+      if (mounted) {
+        setState(() {
+          _error =
+              'Модель распознавания недоступна — аудио сохранится без расшифровки';
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _preparingAudio = false);
+    }
+    _recordingFormat = activeModelDir == null
+        ? AudioRecordingFormat.m4a
+        : AudioRecordingFormat.wavPcm16;
+    _recordingSampleRate = _recordingFormat == AudioRecordingFormat.wavPcm16
+        ? 16000
+        : 44100;
+    _recordingBitRate = const {48000, 64000, 96000}.contains(storedBitRate)
+        ? storedBitRate!
+        : 64000;
+    _recordingMaxDuration = Duration(
+      minutes: const {10, 30, 60, 120}.contains(storedMaxMinutes)
+          ? storedMaxMinutes!
+          : 30,
+    );
+    final extension = _recordingFormat == AudioRecordingFormat.wavPcm16
+        ? 'wav'
+        : 'm4a';
     late final StagedRecording newStaged;
     try {
       newStaged = widget.attachToNote == null
           ? await service.beginAudioNote(
-              extension: 'm4a',
-              projectId: session?.projectId ?? _projectId,
-              sessionId: session?.id,
+              extension: extension,
+              projectId: _projectId,
+              sourceKind: widget.sourceKind == SourceKind.widget
+                  ? SourceKind.widget
+                  : SourceKind.audio,
             )
-          : await service.beginAudioAttachment(widget.attachToNote!);
+          : await service.beginAudioAttachment(
+              widget.attachToNote!,
+              extension: extension,
+            );
     } catch (error) {
       debugPrint('recording staging failed: ${error.runtimeType}');
       if (mounted) setState(() => _error = 'Заметка изменилась — повторите');
       return;
     }
     try {
-      final settings = ref.read(settingsServiceProvider);
-      final storedBitRate = int.tryParse(
-        await settings.get(SettingsService.audioBitRateKey) ?? '',
+      final selectedInputId = await settings.get(
+        SettingsService.audioInputDeviceKey,
       );
-      final storedMaxMinutes = int.tryParse(
-        await settings.get(SettingsService.audioMaxMinutesKey) ?? '',
-      );
-      _recordingBitRate = const {48000, 64000, 96000}.contains(storedBitRate)
-          ? storedBitRate!
-          : 64000;
-      _recordingMaxDuration = Duration(
-        minutes: const {10, 30, 60, 120}.contains(storedMaxMinutes)
-            ? storedMaxMinutes!
-            : 30,
-      );
-      final expectedBytes =
-          (_recordingBitRate / 8 * _recordingMaxDuration.inSeconds).ceil();
+      final expectedBytes = _recordingFormat == AudioRecordingFormat.wavPcm16
+          ? _recordingSampleRate * 2 * _recordingMaxDuration.inSeconds + 44
+          : (_recordingBitRate / 8 * _recordingMaxDuration.inSeconds).ceil();
       final minimumFreeBytesToStart =
           expectedBytes + _minimumFreeBytesWhileRecording;
       final available = await _recordingPlatform.freeBytes(
@@ -326,14 +567,44 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
       }
       _freeBytes = available;
       await _recordingPlatform.setRecordingActive(true);
-      await _recorder.startM4a(
+      await _recorder.start(
         newStaged.stagingPath,
+        format: _recordingFormat,
         bitRate: _recordingBitRate,
+        inputDeviceId: selectedInputId,
       );
+      if (activeModelDir != null) _startLivePreview(activeModelDir);
     } on _InsufficientStorageException {
       await service.abortAudioNote(newStaged);
       if (mounted) {
         setState(() => _error = 'Недостаточно места для начала записи');
+      }
+      return;
+    } on AudioInputDeviceUnavailableException {
+      await _recordingPlatform.setRecordingActive(false);
+      await service.abortAudioNote(newStaged);
+      if (mounted) {
+        setState(
+          () => _error = 'Выбранный микрофон недоступен — измените настройку',
+        );
+      }
+      return;
+    } on AudioRecorderStartException catch (error) {
+      await _recordingPlatform.setRecordingActive(false);
+      await service.abortAudioNote(newStaged);
+      if (mounted) {
+        setState(() {
+          _error = switch (error.failure) {
+            AudioRecorderStartFailure.permission =>
+              'Windows запретил доступ к микрофону — проверьте параметры конфиденциальности',
+            AudioRecorderStartFailure.device =>
+              'Микрофон отключён или занят — выберите другое устройство',
+            AudioRecorderStartFailure.unsupported =>
+              'Драйвер микрофона не поддерживает формат записи',
+            AudioRecorderStartFailure.platform =>
+              'Windows не смог начать запись — переподключите микрофон',
+          };
+        });
       }
       return;
     } catch (e) {
@@ -346,8 +617,16 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
     _recordingStarted = DateTime.now();
     _elapsed = Duration.zero;
     _recordingPaused = false;
+    _liveTranscript = '';
+    _levelHistory.fillRange(0, _levelHistory.length, 0);
     _levelSubscription = _recorder.levels().listen((value) {
-      if (mounted) setState(() => _level = value.normalized);
+      if (!mounted) return;
+      setState(() {
+        _level = value.normalized;
+        _levelHistory
+          ..removeAt(0)
+          ..add(value.normalized);
+      });
     });
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted && _recordingStarted != null) {
@@ -395,17 +674,21 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
     _ticker = null;
     await _levelSubscription?.cancel();
     _levelSubscription = null;
+    await _stopLivePreview();
     try {
       await _recorder.stop();
       await _recordingPlatform.setRecordingActive(false);
       await service.finishAudioNote(
         staged,
         duration: duration,
-        codec: 'aac-lc',
-        sampleRateHz: _sampleRate,
+        codec: _recordingFormat == AudioRecordingFormat.wavPcm16
+            ? 'pcm16-wav'
+            : 'aac-lc',
+        sampleRateHz: _recordingSampleRate,
         channels: 1,
         comment: widget.attachToNote == null ? comment : null,
       );
+      await _enqueueTranscriptionIfModelActive(staged);
       if (widget.attachToNote == null && _controller.text.trim().isEmpty) {
         _draftDebounce?.cancel();
         _draftDirty = false;
@@ -423,6 +706,22 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
     if (popAfter && mounted) Navigator.of(context).pop();
   }
 
+  Future<void> _enqueueTranscriptionIfModelActive(
+    StagedRecording staged,
+  ) async {
+    try {
+      await ref.read(automaticTranscriptionEnqueueProvider)(
+        staged.noteId,
+        staged.assetId,
+      );
+    } catch (error) {
+      // Audio is already ready and remains available for explicit retry.
+      debugPrint(
+        'automatic transcription enqueue failed: ${error.runtimeType}',
+      );
+    }
+  }
+
   Future<void> _finalizeDetached(
     StagedRecording staged, {
     required NotesService? service,
@@ -430,17 +729,21 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
     required String comment,
   }) async {
     if (service == null) {
+      await _stopLivePreview();
       await _recorder.cancel();
       return;
     }
     try {
+      await _stopLivePreview();
       await _recorder.stop();
       await _recordingPlatform.setRecordingActive(false);
       await service.finishAudioNote(
         staged,
         duration: duration,
-        codec: 'aac-lc',
-        sampleRateHz: _sampleRate,
+        codec: _recordingFormat == AudioRecordingFormat.wavPcm16
+            ? 'pcm16-wav'
+            : 'aac-lc',
+        sampleRateHz: _recordingSampleRate,
         channels: 1,
         comment: widget.attachToNote == null ? comment : null,
       );
@@ -460,6 +763,72 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
     }
   }
 
+  void _startLivePreview(String modelDir) {
+    _liveTranscriptionTimer?.cancel();
+    unawaited(_pcmSubscription?.cancel());
+    _liveModelDir = modelDir;
+    _livePcmBytes.clear();
+    _liveTranscript = '';
+    final generation = ++_liveGeneration;
+    _pcmSubscription = _recorder.pcm16Chunks().listen((chunk) {
+      if (generation == _liveGeneration && !_recordingPaused) {
+        _livePcmBytes.addAll(chunk);
+      }
+    });
+    _liveTranscriptionTimer = Timer.periodic(
+      const Duration(seconds: 4),
+      (_) => unawaited(_decodeLiveChunk(generation)),
+    );
+  }
+
+  Future<void> _decodeLiveChunk(int generation) async {
+    final modelDir = _liveModelDir;
+    if (modelDir == null ||
+        generation != _liveGeneration ||
+        _liveDecodeInFlight ||
+        _livePcmBytes.length < 32000) {
+      return;
+    }
+    final bytes = Uint8List.fromList(_livePcmBytes);
+    _livePcmBytes.clear();
+    final sampleCount = bytes.length ~/ 2;
+    final samples = Float32List(sampleCount);
+    final data = ByteData.sublistView(bytes);
+    for (var index = 0; index < sampleCount; index++) {
+      samples[index] = data.getInt16(index * 2, Endian.little) / 32768.0;
+    }
+    _liveDecodeInFlight = true;
+    try {
+      final result = await SherpaWhisperRecognizer(
+        modelDir: modelDir,
+      ).transcribeSamples(samples);
+      final text = result.text.trim();
+      if (text.isNotEmpty && mounted && generation == _liveGeneration) {
+        setState(() {
+          _liveTranscript = _liveTranscript.isEmpty
+              ? text
+              : '$_liveTranscript $text';
+        });
+      }
+    } catch (error) {
+      // Preview is best-effort. The durable full-file queue still runs after
+      // stop, and diagnostics must not include recognized content or paths.
+      debugPrint('live transcription failed: ${error.runtimeType}');
+    } finally {
+      _liveDecodeInFlight = false;
+    }
+  }
+
+  Future<void> _stopLivePreview() async {
+    _liveTranscriptionTimer?.cancel();
+    _liveTranscriptionTimer = null;
+    await _pcmSubscription?.cancel();
+    _pcmSubscription = null;
+    _livePcmBytes.clear();
+    _liveModelDir = null;
+    _liveGeneration++;
+  }
+
   Future<void> _checkStorageWhileRecording(StagedRecording staged) async {
     if (_storageCheckInFlight || _staged?.assetId != staged.assetId) return;
     _storageCheckInFlight = true;
@@ -473,7 +842,7 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
         final messenger = ScaffoldMessenger.of(context);
         await _finishRecording(staged, popAfter: true);
         messenger.showSnackBar(
-          const SnackBar(
+          PotokSnackBar(
             content: Text('Мало места: пригодная часть записи сохранена'),
           ),
         );
@@ -511,26 +880,36 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
     final service = serviceAsync.value;
     _notesService = service ?? _notesService;
     final projects = ref.watch(projectsProvider).value ?? const <Project>[];
-    final currentSession = ref.watch(currentSessionProvider).value;
-    final captureSession =
-        widget.sessionId != null &&
-            currentSession?.id == widget.sessionId &&
-            currentSession?.state == SessionState.active
-        ? currentSession
-        : null;
-    final requestedSessionUnavailable =
-        widget.attachToNote == null &&
-        widget.sessionId != null &&
-        captureSession == null;
-    final effectiveProjectId = captureSession?.projectId ?? _projectId;
+    final effectiveProjectId = _projectId;
     final recording = _staged != null;
     final viewInsets = MediaQuery.of(context).viewInsets;
+    var imageCount = 0;
+    final imageDraft = _imageDraft;
+    if (imageDraft != null) {
+      try {
+        imageCount = PotokDocument.decode(
+          imageDraft.documentJson,
+        ).managedAssetIds.length;
+      } on FormatException {
+        imageCount = 0;
+      }
+    }
 
     if (service == null) {
       return const Padding(
         padding: EdgeInsets.all(40),
         child: Center(child: CircularProgressIndicator()),
       );
+    }
+
+    // Ctrl+Shift+N: автостарт записи после первого кадра с готовым сервисом.
+    // Проверка разрешения микрофона и ошибки — внутри _toggleRecording.
+    if (_autoStartAudioPending) {
+      _autoStartAudioPending = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _staged != null || _savingNote) return;
+        unawaited(_toggleRecording(service));
+      });
     }
 
     return PopScope<void>(
@@ -548,9 +927,9 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
               children: [
                 Expanded(
                   child: Text(
-                  widget.attachToNote == null
-                      ? 'Быстрая заметка'
-                      : 'Добавить аудио',
+                    widget.attachToNote == null
+                        ? 'Быстрая заметка'
+                        : 'Добавить аудио',
                     style: TextStyle(
                       fontSize: 20,
                       fontWeight: FontWeight.w700,
@@ -567,66 +946,145 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
               ],
             ),
             const SizedBox(height: 12),
-          if (widget.attachToNote == null) ...[
-            Align(
-              alignment: Alignment.centerLeft,
-              child: _ProjectChip(
-                projects: projects,
-                projectId: effectiveProjectId,
-                enabled: captureSession == null,
-                onSelected: (id) {
-                  setState(() => _projectId = id);
-                  _scheduleDraftSave();
+            if (widget.attachToNote == null) ...[
+              Align(
+                alignment: Alignment.centerLeft,
+                child: _ProjectChip(
+                  projects: projects,
+                  projectId: effectiveProjectId,
+                  onSelected: (id) {
+                    setState(() => _projectId = id);
+                    _scheduleDraftSave();
+                  },
+                ),
+              ),
+              const SizedBox(height: 12),
+              Shortcuts(
+                shortcuts: const {
+                  SingleActivator(LogicalKeyboardKey.keyV, control: true):
+                      PasteWithImagesIntent(),
                 },
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _controller,
-              autofocus: true,
-              minLines: 5,
-              maxLines: 10,
-              onChanged: (_) => _scheduleDraftSave(),
-              style: TextStyle(fontSize: 14, height: 1.5, color: c.text),
-              decoration: InputDecoration(
-                hintText:
-                    'Текст, чек-лист или запись аудио…',
-                hintStyle: TextStyle(color: c.muted),
-                filled: true,
-                fillColor: c.surface2,
-                contentPadding: const EdgeInsets.all(15),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(c.radiusSmall),
-                  borderSide: BorderSide(color: c.line),
+                child: Actions(
+                  actions: {
+                    PasteWithImagesIntent:
+                        CallbackAction<PasteWithImagesIntent>(
+                          onInvoke: (_) {
+                            unawaited(_pasteIntoCapture(service));
+                            return null;
+                          },
+                        ),
+                  },
+                  child: TextField(
+                    controller: _controller,
+                    autofocus: true,
+                    minLines: 5,
+                    maxLines: 10,
+                    onChanged: (_) => _scheduleDraftSave(),
+                    style: TextStyle(fontSize: 14, height: 1.5, color: c.text),
+                    decoration: InputDecoration(
+                      hintText: 'Текст, чек-лист или запись аудио…',
+                      hintStyle: TextStyle(color: c.muted),
+                      filled: true,
+                      fillColor: c.surface2,
+                      contentPadding: const EdgeInsets.all(15),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(c.radiusSmall),
+                        borderSide: BorderSide(color: c.line),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(c.radiusSmall),
+                        borderSide: BorderSide(color: c.accent),
+                      ),
+                    ),
+                  ),
                 ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(c.radiusSmall),
-                  borderSide: BorderSide(color: c.accent),
+              ),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: OutlinedButton.icon(
+                  key: const ValueKey('capture-attach-photo'),
+                  onPressed: _savingNote
+                      ? null
+                      : () => _attachPickedImage(service),
+                  icon: const Icon(
+                    Icons.add_photo_alternate_outlined,
+                    size: 18,
+                  ),
+                  label: Text(
+                    imageCount == 0
+                        ? 'Прикрепить фото'
+                        : 'Прикрепить фото · $imageCount',
+                  ),
                 ),
               ),
-            ),
-          ] else
-            Text(
-              'Запись будет добавлена к текущей заметке. Её текст не изменится.',
-              style: TextStyle(fontSize: 12, color: c.muted),
-            ),
+            ] else
+              Text(
+                'Запись будет добавлена к текущей заметке. Её текст не изменится.',
+                style: TextStyle(fontSize: 12, color: c.muted),
+              ),
             const SizedBox(height: 8),
             Text(
-            widget.attachToNote != null
-                ? '● К заметке можно добавить несколько независимых записей'
-                : captureSession == null
-                  ? '● Черновик сохраняется автоматически · проект и теги необязательны'
-                  : '● Заметка войдёт в сессию «${captureSession.title}»',
+              widget.attachToNote != null
+                  ? '● К заметке можно добавить несколько независимых записей'
+                  : '● Черновик сохраняется автоматически · проект и теги необязательны',
               style: TextStyle(fontSize: 11, color: c.decision),
             ),
-            SizedBox(
-              height: 28,
+            ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 28),
               child: recording
                   ? Padding(
                       padding: const EdgeInsets.only(top: 8),
-                      child: Text(
-                        'Запись сохраняется локально… ${_elapsed.inMinutes}:${(_elapsed.inSeconds % 60).toString().padLeft(2, '0')} · ${_formatFreeBytes(_freeBytes)}',
-                        style: TextStyle(fontSize: 12, color: c.accent),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Запись сохраняется локально… ${_elapsed.inMinutes}:${(_elapsed.inSeconds % 60).toString().padLeft(2, '0')} · ${_formatFreeBytes(_freeBytes)}',
+                            style: TextStyle(fontSize: 12, color: c.accent),
+                          ),
+                          if (_liveModelDir != null) ...[
+                            const SizedBox(height: 6),
+                            Text(
+                              _liveTranscript.isEmpty
+                                  ? 'Распознавание появится через несколько секунд…'
+                                  : _liveTranscript,
+                              key: const ValueKey('live-transcript-preview'),
+                              maxLines: 3,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 12,
+                                height: 1.35,
+                                color: c.text,
+                              ),
+                            ),
+                          ],
+                          if (_error != null) ...[
+                            const SizedBox(height: 6),
+                            Text(
+                              _error!,
+                              style: TextStyle(fontSize: 12, color: c.danger),
+                            ),
+                          ],
+                        ],
+                      ),
+                    )
+                  : _preparingAudio
+                  ? Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Row(
+                        children: [
+                          const SizedBox.square(
+                            dimension: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Подготовка офлайн-модели…',
+                              style: TextStyle(fontSize: 12, color: c.muted),
+                            ),
+                          ),
+                        ],
                       ),
                     )
                   : _error != null
@@ -656,18 +1114,26 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
                   children: [
                     _MicButton(
                       recording: recording,
-                      onPressed: _savingNote || requestedSessionUnavailable
+                      onPressed: _savingNote || _preparingAudio
                           ? null
-                          : () => _toggleRecording(service, captureSession),
+                          : () => _toggleRecording(service),
                     ),
                     if (recording) ...[
                       const SizedBox(height: 4),
-                      SizedBox(
-                        width: 64,
-                        child: LinearProgressIndicator(
+                      Semantics(
+                        label: 'Уровень сигнала записи',
+                        value: '${(_level * 100).round()}%',
+                        child: SizedBox(
                           key: const ValueKey('recording-level'),
-                          value: _level,
-                          minHeight: 3,
+                          width: 92,
+                          height: 22,
+                          child: CustomPaint(
+                            painter: _AudioWaveformPainter(
+                              levels: List<double>.of(_levelHistory),
+                              color: c.accent,
+                              idleColor: c.line,
+                            ),
+                          ),
                         ),
                       ),
                       IconButton(
@@ -690,24 +1156,22 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
                     ),
                   ],
                 ),
-              Expanded(
-                child: widget.attachToNote == null
-                    ? Align(
-                        alignment: Alignment.centerRight,
-                        child: FilledButton(
-                          onPressed:
-                              _savingNote || requestedSessionUnavailable
-                              ? null
-                              : () => _saveText(
-                                  service,
-                                  projects,
-                                  captureSession,
-                                ),
-                          child: const Text('Готово'),
-                        ),
-                      )
-                    : const SizedBox.shrink(),
-              ),
+                Expanded(
+                  child: widget.attachToNote == null
+                      ? Align(
+                          alignment: Alignment.centerRight,
+                          child: FilledButton(
+                            onPressed: _savingNote
+                                ? null
+                                : recording
+                                ? () =>
+                                      _finishRecording(_staged!, popAfter: true)
+                                : () => _saveText(service, projects),
+                            child: const Text('Готово'),
+                          ),
+                        )
+                      : const SizedBox.shrink(),
+                ),
               ],
             ),
           ],
@@ -717,6 +1181,51 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
   }
 }
 
+class _AudioWaveformPainter extends CustomPainter {
+  final List<double> levels;
+  final Color color;
+  final Color idleColor;
+
+  const _AudioWaveformPainter({
+    required this.levels,
+    required this.color,
+    required this.idleColor,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final centerY = size.height / 2;
+    final baseline = Paint()
+      ..color = idleColor
+      ..strokeWidth = 1;
+    canvas.drawLine(Offset(0, centerY), Offset(size.width, centerY), baseline);
+    if (levels.isEmpty || size.width <= 0) return;
+
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+    final step = size.width / levels.length;
+    for (var index = 0; index < levels.length; index++) {
+      final normalized = levels[index].clamp(0.0, 1.0);
+      final eased = normalized * normalized;
+      final halfHeight = 1.5 + eased * (centerY - 2);
+      final x = step * index + step / 2;
+      canvas.drawLine(
+        Offset(x, centerY - halfHeight),
+        Offset(x, centerY + halfHeight),
+        paint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _AudioWaveformPainter oldDelegate) =>
+      oldDelegate.levels != levels ||
+      oldDelegate.color != color ||
+      oldDelegate.idleColor != idleColor;
+}
+
 class _InsufficientStorageException implements Exception {
   const _InsufficientStorageException();
 }
@@ -724,13 +1233,11 @@ class _InsufficientStorageException implements Exception {
 class _ProjectChip extends StatelessWidget {
   final List<Project> projects;
   final String? projectId;
-  final bool enabled;
   final ValueChanged<String?> onSelected;
 
   const _ProjectChip({
     required this.projects,
     required this.projectId,
-    this.enabled = true,
     required this.onSelected,
   });
 
@@ -746,7 +1253,6 @@ class _ProjectChip extends StatelessWidget {
     }
     return PopupMenuButton<String>(
       tooltip: 'Выбрать проект',
-      enabled: enabled,
       onSelected: (value) => onSelected(value.isEmpty ? null : value),
       itemBuilder: (context) => [
         PopupMenuItem(

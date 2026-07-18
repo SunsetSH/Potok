@@ -6,6 +6,7 @@ import '../application/tags_service.dart';
 import '../domain/types.dart';
 import '../infrastructure/db/database.dart';
 import 'providers.dart';
+import 'snackbars.dart';
 import 'theme.dart';
 
 /// Перенос заметки в проект (FR-MOV-001..005): проверка конфликта
@@ -18,6 +19,7 @@ Future<void> moveNoteToProject(
   String? targetProjectId,
 ) async {
   if (note.projectId == targetProjectId) return;
+  ref.read(searchFocusProvider).unfocus();
   final messenger = ScaffoldMessenger.of(context);
   try {
     final tagsService = await ref.read(tagsServiceProvider.future);
@@ -55,7 +57,7 @@ Future<void> moveNoteToProject(
     }
     final previousProjectId = note.projectId;
     messenger.showSnackBar(
-      SnackBar(
+      PotokSnackBar(
         content: Text('Перенесено в «$targetName»'),
         action: SnackBarAction(
           label: 'Отменить',
@@ -66,14 +68,14 @@ Future<void> moveNoteToProject(
     );
   } on StateError {
     messenger.showSnackBar(
-      const SnackBar(
+      PotokSnackBar(
         content: Text('Заметка изменилась — показана актуальная версия'),
       ),
     );
   } catch (e) {
     debugPrint('move note failed: ${e.runtimeType}');
     messenger.showSnackBar(
-      const SnackBar(content: Text('Не удалось перенести заметку')),
+      PotokSnackBar(content: const Text('Не удалось перенести заметку')),
     );
   }
 }
@@ -96,7 +98,7 @@ Future<void> _undoMove(
   } catch (e) {
     debugPrint('undo move failed: ${e.runtimeType}');
     messenger.showSnackBar(
-      const SnackBar(content: Text('Не удалось отменить перенос')),
+      PotokSnackBar(content: const Text('Не удалось отменить перенос')),
     );
   }
 }
@@ -143,6 +145,7 @@ Future<ProjectTagResolution?> _askProjectTagResolution(
 /// Узкий макет / Android: modal bottom sheet выбора проекта
 /// (элементы min height 56 — FR-MOV-004).
 Future<void> showMoveNoteSheet(BuildContext context, WidgetRef ref, Note note) {
+  ref.read(searchFocusProvider).unfocus();
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,

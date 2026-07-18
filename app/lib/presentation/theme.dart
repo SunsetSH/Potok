@@ -218,17 +218,17 @@ const _terminal = PotokColors(
 );
 
 PotokColors potokTokens(PotokThemeId id) => switch (id) {
-      PotokThemeId.studio => _studio,
-      PotokThemeId.studioNight => _studioNight,
-      PotokThemeId.paper => _paper,
-      PotokThemeId.terminal => _terminal,
-    };
+  PotokThemeId.studio => _studio,
+  PotokThemeId.studioNight => _studioNight,
+  PotokThemeId.paper => _paper,
+  PotokThemeId.terminal => _terminal,
+};
 
 String _fontFamily(PotokThemeId id) => switch (id) {
-      PotokThemeId.studio || PotokThemeId.studioNight => 'Segoe UI',
-      PotokThemeId.paper => 'Georgia',
-      PotokThemeId.terminal => 'Consolas',
-    };
+  PotokThemeId.studio || PotokThemeId.studioNight => 'Segoe UI',
+  PotokThemeId.paper => 'Georgia',
+  PotokThemeId.terminal => 'Consolas',
+};
 
 ThemeData buildPotokTheme(PotokThemeId id) {
   final t = potokTokens(id);
@@ -285,9 +285,7 @@ ThemeData buildPotokTheme(PotokThemeId id) {
       backgroundColor: t.text,
       contentTextStyle: TextStyle(color: t.surface, fontSize: 12),
       behavior: SnackBarBehavior.floating,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(999),
-      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
     ),
     floatingActionButtonTheme: FloatingActionButtonThemeData(
       backgroundColor: t.accent,
@@ -298,7 +296,7 @@ ThemeData buildPotokTheme(PotokThemeId id) {
     ),
     textSelectionTheme: TextSelectionThemeData(
       cursorColor: t.accent,
-      selectionColor: t.accentSoft,
+      selectionColor: t.accent.withValues(alpha: dark ? 0.32 : 0.22),
       selectionHandleColor: t.accent,
     ),
     bottomSheetTheme: BottomSheetThemeData(

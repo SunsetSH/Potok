@@ -185,9 +185,7 @@ void main() {
     expect(names, {'manifest.json', 'database.sqlite', mediaName});
 
     final manifest =
-        jsonDecode(
-              utf8.decode(archive.find('manifest.json')!.readBytes()!),
-            )
+        jsonDecode(utf8.decode(archive.find('manifest.json')!.readBytes()!))
             as Map<String, Object?>;
     expect(manifest['format'], 'potok.backup');
     expect(manifest['format_version'], 1);
@@ -239,10 +237,7 @@ void main() {
     }
     final mediaFile = File(p.join(supportB.path, 'media', relativePath));
     expect(mediaFile.existsSync(), isTrue);
-    expect(
-      sha256.convert(mediaFile.readAsBytesSync()).toString(),
-      mediaSha,
-    );
+    expect(sha256.convert(mediaFile.readAsBytesSync()).toString(), mediaSha);
   });
 
   Future<void> expectRejectedAndUntouched(
@@ -368,10 +363,9 @@ void main() {
       throwsA(isA<BackupCancelled>()),
     );
     expect(File(target).existsSync(), isFalse);
-    final leftovers = Directory(root.path)
-        .listSync()
-        .whereType<File>()
-        .where((f) => p.basename(f.path).startsWith('cancelled'));
+    final leftovers = Directory(root.path).listSync().whereType<File>().where(
+      (f) => p.basename(f.path).startsWith('cancelled'),
+    );
     expect(leftovers, isEmpty);
   });
 }

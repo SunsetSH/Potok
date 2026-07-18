@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Potok</string>
+    <string name="share_target_label">Save to Potok</string>
+    <string name="shortcut_text_short">New note</string>
+    <string name="shortcut_text_long">Create a text note</string>
+    <string name="shortcut_audio_short">Record audio</string>
+    <string name="shortcut_audio_long">Create an audio note</string>
+    <string name="widget_description">Quick capture in Potok</string>
+    <string name="widget_no_project">No project</string>
+    <string name="widget_text">+Text</string>
+    <string name="widget_audio">+Audio</string>
+    <string name="widget_text_description">Create a text note</string>
+    <string name="widget_audio_description">Start an audio note</string>
+</resources>

@@ -48,6 +48,7 @@ class ImagesService {
     'jpeg': 'image/jpeg',
     'png': 'image/png',
     'webp': 'image/webp',
+    'bmp': 'image/bmp',
   };
 
   /// Копирует [sourcePath] в media-хранилище и возвращает `ready`-asset,
@@ -78,12 +79,70 @@ class ImagesService {
     if (mime == null) {
       throw const ImageAttachException('Поддерживаются только JPG, PNG и WebP');
     }
-    if (!_hasExpectedSignature(source, extension)) {
+    final handle = source.openSync();
+    late final List<int> header;
+    try {
+      header = handle.readSync(12);
+    } finally {
+      handle.closeSync();
+    }
+    if (!_hasExpectedSignature(header, extension)) {
       throw const ImageAttachException(
         'Содержимое файла не соответствует формату изображения',
       );
     }
 
+    return _publishImage(
+      note,
+      extension: extension,
+      mime: mime,
+      writeStaging: (path) async {
+        await source.copy(path);
+      },
+    );
+  }
+
+  /// Platform adapter определил encoded format по magic bytes. Проверки и публикация
+  /// совпадают с picker path; bytes никогда не попадают в document JSON.
+  Future<MediaAsset> attachImageBytes(
+    Note note,
+    Uint8List bytes, {
+    required String extension,
+  }) async {
+    final normalized = extension.toLowerCase().replaceFirst('.', '');
+    final mime = _mimeByExtension[normalized];
+    if (mime == null) {
+      throw const ImageAttachException(
+        'Поддерживаются только JPG, PNG, WebP и BMP',
+      );
+    }
+    if (bytes.isEmpty) {
+      throw const ImageAttachException('Изображение из буфера пусто');
+    }
+    if (bytes.length > maxImageBytes) {
+      throw const ImageAttachException(
+        'Изображение больше 10 МБ — используйте файл меньшего размера',
+      );
+    }
+    if (!_hasExpectedSignature(bytes.take(12).toList(), normalized)) {
+      throw const ImageAttachException(
+        'Содержимое буфера не соответствует формату изображения',
+      );
+    }
+    return _publishImage(
+      note,
+      extension: normalized,
+      mime: mime,
+      writeStaging: (path) => File(path).writeAsBytes(bytes, flush: true),
+    );
+  }
+
+  Future<MediaAsset> _publishImage(
+    Note note, {
+    required String extension,
+    required String mime,
+    required Future<void> Function(String path) writeStaging,
+  }) async {
     final assetId = ids.newId();
     final relativePath = media.relativePathFor(assetId, extension);
     final now = clock.nowUtcMillis();
@@ -105,7 +164,7 @@ class ImagesService {
         );
     try {
       await media.prepareStaging(relativePath);
-      await source.copy(media.stagingPath(relativePath));
+      await writeStaging(media.stagingPath(relativePath));
       final result = await media.finalize(relativePath);
       final readyAt = clock.nowUtcMillis();
       await (db.update(
@@ -146,6 +205,18 @@ class ImagesService {
     }
     final file = File(media.absolutePath(asset.relativePath));
     return file.existsSync() ? file : null;
+  }
+
+  Future<void> discardDraftImages(String noteId) async {
+    final assets = await (db.select(
+      db.mediaAssets,
+    )..where((asset) => asset.ownerNoteId.equals(noteId))).get();
+    for (final asset in assets) {
+      await media.discard(asset.relativePath);
+    }
+    await (db.delete(
+      db.mediaAssets,
+    )..where((asset) => asset.ownerNoteId.equals(noteId))).go();
   }
 
   /// Marks old, unreferenced images as tombstones and removes their bytes.
@@ -244,37 +315,32 @@ class ImagesService {
     );
   }
 
-  static bool _hasExpectedSignature(File source, String extension) {
-    final handle = source.openSync();
-    try {
-      final header = handle.readSync(12);
-      return switch (extension) {
-        'jpg' || 'jpeg' =>
-          header.length >= 3 &&
-              header[0] == 0xFF &&
-              header[1] == 0xD8 &&
-              header[2] == 0xFF,
-        'png' =>
-          header.length >= 8 &&
-              _matches(header, 0, const [
-                0x89,
-                0x50,
-                0x4E,
-                0x47,
-                0x0D,
-                0x0A,
-                0x1A,
-                0x0A,
-              ]),
-        'webp' =>
-          header.length >= 12 &&
-              _matches(header, 0, const [0x52, 0x49, 0x46, 0x46]) &&
-              _matches(header, 8, const [0x57, 0x45, 0x42, 0x50]),
-        _ => false,
-      };
-    } finally {
-      handle.closeSync();
-    }
+  static bool _hasExpectedSignature(List<int> header, String extension) {
+    return switch (extension) {
+      'jpg' || 'jpeg' =>
+        header.length >= 3 &&
+            header[0] == 0xFF &&
+            header[1] == 0xD8 &&
+            header[2] == 0xFF,
+      'png' =>
+        header.length >= 8 &&
+            _matches(header, 0, const [
+              0x89,
+              0x50,
+              0x4E,
+              0x47,
+              0x0D,
+              0x0A,
+              0x1A,
+              0x0A,
+            ]),
+      'webp' =>
+        header.length >= 12 &&
+            _matches(header, 0, const [0x52, 0x49, 0x46, 0x46]) &&
+            _matches(header, 8, const [0x57, 0x45, 0x42, 0x50]),
+      'bmp' => header.length >= 2 && header[0] == 0x42 && header[1] == 0x4D,
+      _ => false,
+    };
   }
 
   static bool _matches(List<int> bytes, int offset, List<int> signature) {

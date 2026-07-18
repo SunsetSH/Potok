@@ -10,8 +10,20 @@ import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.util.ArrayDeque
 
 class MainActivity : FlutterActivity() {
+    companion object {
+        private const val launchChannelName = "dev.potok/launch_intents"
+        private const val maxPendingLaunches = 8
+        private const val maxSharedTextCodePoints = 100_000
+        private val projectIdPattern = Regex("^[A-Za-z0-9_-]{1,128}$")
+    }
+
+    private val pendingLaunches = ArrayDeque<Map<String, Any?>>()
+    private lateinit var launchChannel: MethodChannel
+    private var initialIntentEnqueued = false
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(
@@ -43,6 +55,83 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+        launchChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            launchChannelName,
+        )
+        launchChannel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "takeNext" -> result.success(pendingLaunches.pollFirst())
+                "setWidgetProject" -> {
+                    val id = call.argument<String>("id")?.takeIf(projectIdPattern::matches)
+                    val name = call.argument<String>("name")?.trim()?.take(120)
+                        ?.takeIf(String::isNotEmpty)
+                    val preferences = getSharedPreferences(LaunchActions.WIDGET_PREFS, MODE_PRIVATE)
+                    preferences.edit().apply {
+                        if (id == null || name == null) {
+                            remove(LaunchActions.WIDGET_PROJECT_ID)
+                            remove(LaunchActions.WIDGET_PROJECT_NAME)
+                        } else {
+                            putString(LaunchActions.WIDGET_PROJECT_ID, id)
+                            putString(LaunchActions.WIDGET_PROJECT_NAME, name)
+                        }
+                    }.apply()
+                    QuickCaptureWidgetProvider.updateAll(this)
+                    result.success(null)
+                }
+                else -> result.notImplemented()
+            }
+        }
+        if (!initialIntentEnqueued) {
+            initialIntentEnqueued = true
+            enqueueLaunch(intent)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (enqueueLaunch(intent) && ::launchChannel.isInitialized) {
+            launchChannel.invokeMethod("launchIntentAvailable", null)
+        }
+    }
+
+    private fun enqueueLaunch(source: Intent?): Boolean {
+        if (source == null) return false
+        val request = when (source.action) {
+            LaunchActions.NEW_TEXT -> launchRequest("text", source)
+            LaunchActions.NEW_AUDIO -> launchRequest("audio", source)
+            Intent.ACTION_SEND -> shareRequest(source)
+            else -> null
+        } ?: return false
+        if (pendingLaunches.size >= maxPendingLaunches) pendingLaunches.removeFirst()
+        pendingLaunches.addLast(request)
+        return true
+    }
+
+    private fun launchRequest(kind: String, source: Intent): Map<String, Any?> {
+        val projectId = source.getStringExtra(LaunchActions.EXTRA_PROJECT_ID)
+            ?.takeIf(projectIdPattern::matches)
+        return buildMap {
+            put("kind", kind)
+            if (projectId != null) put("projectId", projectId)
+        }
+    }
+
+    private fun shareRequest(source: Intent): Map<String, Any?>? {
+        if (source.type?.startsWith("text/") != true) return null
+        val subject = source.getCharSequenceExtra(Intent.EXTRA_SUBJECT)?.toString()?.trim().orEmpty()
+        val body = source.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.trim().orEmpty()
+        val combined = listOf(subject, body).filter(String::isNotEmpty).distinct().joinToString("\n\n")
+        if (combined.isEmpty()) return null
+        return mapOf("kind" to "share", "text" to boundCodePoints(combined))
+    }
+
+    private fun boundCodePoints(value: String): String {
+        val count = value.codePointCount(0, value.length)
+        if (count <= maxSharedTextCodePoints) return value
+        val end = value.offsetByCodePoints(0, maxSharedTextCodePoints)
+        return value.substring(0, end)
     }
 
     private fun setRecordingActive(active: Boolean) {

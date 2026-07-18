@@ -65,6 +65,12 @@ class JustAudioPlaybackController extends AudioPlaybackController {
   @override
   Future<void> open(String path) async {
     try {
+      _update(
+        loading: true,
+        playing: false,
+        position: Duration.zero,
+        duration: Duration.zero,
+      );
       final session = await AudioSession.instance;
       await session.configure(AudioSessionConfiguration.speech());
       _subscriptions.add(
@@ -86,13 +92,35 @@ class JustAudioPlaybackController extends AudioPlaybackController {
                 value.processingState == ProcessingState.buffering,
           );
           if (value.processingState == ProcessingState.completed) {
+            _update(playing: false, position: Duration.zero);
             unawaited(_player.seek(Duration.zero));
             unawaited(_player.pause());
           }
         }),
       );
       _subscriptions.add(
-        _player.positionStream.listen((value) => _update(position: value)),
+        _player
+            .createPositionStream(
+              steps: 1000,
+              minPeriod: const Duration(milliseconds: 60),
+              maxPeriod: const Duration(milliseconds: 200),
+            )
+            .listen((value) {
+              // The Windows backend can emit the previous/end position while
+              // loading a completed source. Completed audio is represented at
+              // zero until the user starts it again.
+              if (_player.processingState == ProcessingState.completed &&
+                  !_player.playing) {
+                _update(position: Duration.zero);
+                return;
+              }
+              _update(position: value);
+            }),
+      );
+      _subscriptions.add(
+        _player.positionDiscontinuityStream.listen(
+          (_) => _update(position: _player.position),
+        ),
       );
       _subscriptions.add(
         _player.durationStream.listen((value) {
@@ -100,7 +128,16 @@ class JustAudioPlaybackController extends AudioPlaybackController {
         }),
       );
       final duration = await _player.setFilePath(path);
-      _update(loading: false, duration: duration ?? Duration.zero);
+      // `setFilePath` may preserve/report EOF on Windows. Make the backend and
+      // the immutable UI state agree on the initial position.
+      await _player.seek(Duration.zero);
+      await _player.pause();
+      _update(
+        loading: false,
+        playing: false,
+        position: Duration.zero,
+        duration: duration ?? Duration.zero,
+      );
     } catch (error) {
       _update(loading: false, error: 'audio_unavailable');
       rethrow;
@@ -127,6 +164,9 @@ class JustAudioPlaybackController extends AudioPlaybackController {
         : position > _state.duration
         ? _state.duration
         : position;
+    // UI не ждёт запаздывающее Windows MediaPlayer event: после явного seek
+    // thumb немедленно занимает выбранную позицию.
+    _update(position: bounded);
     await _player.seek(bounded);
   }
 

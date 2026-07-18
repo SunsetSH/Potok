@@ -7,15 +7,14 @@ class DeviceIdentity {
 
   static Future<String> ensure(AppDatabase db, IdGenerator ids) async {
     return db.transaction(() async {
-      final existing = await (db.select(db.appMeta)
-            ..where((m) => m.key.equals(_key)))
-          .getSingleOrNull();
+      final existing = await (db.select(
+        db.appMeta,
+      )..where((m) => m.key.equals(_key))).getSingleOrNull();
       if (existing != null) return existing.value;
       final id = ids.newId();
-      await db.into(db.appMeta).insert(AppMetaCompanion.insert(
-            key: _key,
-            value: id,
-          ));
+      await db
+          .into(db.appMeta)
+          .insert(AppMetaCompanion.insert(key: _key, value: id));
       return id;
     });
   }

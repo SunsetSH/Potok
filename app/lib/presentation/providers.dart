@@ -1,11 +1,12 @@
 import 'dart:io';
 
-import 'package:flutter/widgets.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../application/backup_service.dart';
+import '../application/clipboard_image_reader.dart';
 import '../application/drafts_service.dart';
 import '../application/export_service.dart';
 import '../application/images_service.dart';
@@ -14,7 +15,6 @@ import '../application/note_list_query.dart';
 import '../application/notes_service.dart';
 import '../application/projects_service.dart';
 import '../application/restore_service.dart';
-import '../application/sessions_service.dart';
 import '../application/settings_service.dart';
 import '../application/smart_views_service.dart';
 import '../application/storage_usage_service.dart';
@@ -23,6 +23,7 @@ import '../application/transcription_queue.dart';
 import '../domain/clock.dart';
 import '../domain/id_generator.dart';
 import '../domain/types.dart';
+import '../infrastructure/asr/bundled_model_installer.dart';
 import '../infrastructure/asr/model_manager.dart';
 import '../infrastructure/asr/sherpa_whisper_recognizer.dart';
 import '../infrastructure/audio_player_controller.dart';
@@ -31,6 +32,7 @@ import '../infrastructure/db/database.dart';
 import '../infrastructure/db/device_identity.dart';
 import '../infrastructure/media_store.dart';
 import '../infrastructure/recording_platform.dart';
+import '../infrastructure/system_clipboard_image_reader.dart';
 import 'theme.dart';
 
 // ---------- DI ----------
@@ -59,6 +61,26 @@ final audioRecorderFactoryProvider = Provider<AudioRecorderPort Function()>((
   return RecordAudioRecorderAdapter.new;
 });
 
+/// Capture devices are queried through a short-lived recorder so the settings
+/// page never owns the recorder used by an active capture route.
+final audioInputDevicesProvider = FutureProvider<List<AudioInputDevice>>((
+  ref,
+) async {
+  final recorder = ref.watch(audioRecorderFactoryProvider)();
+  try {
+    return await recorder.listInputDevices();
+  } finally {
+    await recorder.dispose();
+  }
+});
+
+final audioInputDeviceIdProvider = StreamProvider<String?>((ref) {
+  return ref
+      .watch(settingsServiceProvider)
+      .watch(SettingsService.audioInputDeviceKey)
+      .map((value) => value == null || value.isEmpty ? null : value);
+});
+
 final recordingPlatformProvider = Provider<RecordingPlatformPort>((ref) {
   return MethodChannelRecordingPlatform();
 });
@@ -69,11 +91,22 @@ final modelManagerProvider = FutureProvider<AsrModelManager>((ref) async {
   final support = await getApplicationSupportDirectory();
   final root = Directory(p.join(support.path, 'models'));
   await root.create(recursive: true);
-  return AsrModelManager(
+  final manager = AsrModelManager(
     modelsRoot: root,
     settings: ref.watch(settingsServiceProvider),
     devFallbackDir: Platform.environment['POTOK_ASR_MODEL_DIR'],
   );
+  await BundledModelInstaller().ensureInstalled(manager);
+  return manager;
+});
+
+final activeAsrModelDirectoryProvider = FutureProvider<String?>((ref) async {
+  final manager = await ref.watch(modelManagerProvider.future);
+  return manager.activeModelDir();
+});
+
+final asrReadyRecordingProvider = FutureProvider<bool>((ref) async {
+  return await ref.watch(activeAsrModelDirectoryProvider.future) != null;
 });
 
 /// Durable-очередь расшифровки; при создании возвращает в работу job'ы,
@@ -90,10 +123,28 @@ final transcriptionQueueProvider = FutureProvider<TranscriptionQueue>((
     engineId: 'sherpa-onnx',
     clock: ref.watch(clockProvider),
     ids: ref.watch(idGeneratorProvider),
+    onTranscriptReady: (noteId, text) async {
+      final notes = await ref.read(notesServiceProvider.future);
+      await notes.suggestTitleFromTranscript(noteId, text);
+    },
   );
   await queue.recoverOnStartup();
   return queue;
 });
+
+/// FR-AUD-005: after a ready audio publish, enqueue local ASR only when the
+/// user has an active model. The audio commit never depends on this follow-up.
+final automaticTranscriptionEnqueueProvider =
+    Provider<Future<void> Function(String noteId, String assetId)>((ref) {
+      return (noteId, assetId) async {
+        final activeModelId = await ref
+            .read(settingsServiceProvider)
+            .get(AsrModelManager.activeModelKey);
+        if (activeModelId == null || activeModelId.isEmpty) return;
+        final queue = await ref.read(transcriptionQueueProvider.future);
+        await queue.enqueue(noteId, assetId);
+      };
+    });
 
 /// Манифест активной модели для UI настроек (null — модель не установлена
 /// или пак битый; dev-fallback без манифеста здесь не показывается).
@@ -162,15 +213,6 @@ final imagesServiceProvider = FutureProvider<ImagesService>((ref) async {
   );
 });
 
-final sessionsServiceProvider = FutureProvider<SessionsService>((ref) async {
-  return SessionsService(
-    db: ref.watch(databaseProvider),
-    clock: ref.watch(clockProvider),
-    ids: ref.watch(idGeneratorProvider),
-    deviceId: await ref.watch(deviceIdProvider.future),
-  );
-});
-
 final smartViewsServiceProvider = FutureProvider<SmartViewsService>((
   ref,
 ) async {
@@ -180,11 +222,6 @@ final smartViewsServiceProvider = FutureProvider<SmartViewsService>((
     ids: ref.watch(idGeneratorProvider),
     deviceId: await ref.watch(deviceIdProvider.future),
   );
-});
-
-final sessionRecoveryProvider = FutureProvider<int>((ref) async {
-  final service = await ref.watch(sessionsServiceProvider.future);
-  return service.recoverOnStartup();
 });
 
 final mediaRecoveryProvider = FutureProvider<MediaRepairReport>((ref) async {
@@ -297,12 +334,40 @@ final themeIdProvider = StreamProvider<PotokThemeId>((ref) {
 /// без привязки к конкретному экрану.
 final appNavigatorKey = GlobalKey<NavigatorState>();
 
+/// Root messenger: SnackBar из глобальных шорткатов (Delete → корзина)
+/// без привязки к конкретному Scaffold.
+final appScaffoldMessengerKey = GlobalKey<ScaffoldMessengerState>();
+
 /// Фокус строки поиска (Ctrl+K).
 final searchFocusProvider = Provider<FocusNode>((ref) {
   final node = FocusNode(debugLabel: 'notes-search');
   ref.onDispose(node.dispose);
   return node;
 });
+
+final clipboardImageReaderProvider = Provider<ClipboardImageReader>((ref) {
+  return SystemClipboardImageReader();
+});
+
+/// Durable flush документа detail-панели (Ctrl+S, FR-NOT-006).
+/// Панель регистрирует свой flush-колбэк; глобальный шорткат вызывает его,
+/// не зная о внутреннем состоянии панели.
+class NoteFlushRegistry {
+  Future<void> Function()? _flush;
+
+  void register(Future<void> Function() flush) => _flush = flush;
+
+  void unregister(Future<void> Function() flush) {
+    // Tear-off одного метода равен (==), но не обязательно identical.
+    if (_flush == flush) _flush = null;
+  }
+
+  Future<void> flushNow() => _flush?.call() ?? Future<void>.value();
+}
+
+final noteFlushRegistryProvider = Provider<NoteFlushRegistry>(
+  (ref) => NoteFlushRegistry(),
+);
 
 // ---------- Навигация sidebar ----------
 
@@ -510,7 +575,7 @@ final projectNoteCountsProvider = StreamProvider<Map<String, int>>((
   yield* service.watchProjectCounts();
 });
 
-final notesChangeProvider = StreamProvider<void>((ref) async* {
+final notesChangeProvider = StreamProvider<int>((ref) async* {
   final service = await ref.watch(notesServiceProvider.future);
   yield* service.watchChanges();
 });
@@ -518,24 +583,6 @@ final notesChangeProvider = StreamProvider<void>((ref) async* {
 final smartViewsProvider = StreamProvider<List<SmartView>>((ref) async* {
   final service = await ref.watch(smartViewsServiceProvider.future);
   yield* service.watchViews();
-});
-
-final currentSessionProvider = StreamProvider<Session?>((ref) async* {
-  final service = await ref.watch(sessionsServiceProvider.future);
-  yield* service.watchCurrent();
-});
-
-final sessionsProvider = StreamProvider<List<Session>>((ref) async* {
-  final service = await ref.watch(sessionsServiceProvider.future);
-  yield* service.watchSessions();
-});
-
-final sessionNotesProvider = StreamProvider.family<List<Note>, String>((
-  ref,
-  sessionId,
-) async* {
-  final service = await ref.watch(sessionsServiceProvider.future);
-  yield* service.watchNotes(sessionId);
 });
 
 /// Заметки текущего раздела sidebar.
@@ -737,6 +784,11 @@ final availableTagsProvider = StreamProvider.family<List<Tag>, String?>((
 ) async* {
   final service = await ref.watch(tagsServiceProvider.future);
   yield* service.watchTags(projectId: projectId);
+});
+
+final allTagsProvider = StreamProvider<List<Tag>>((ref) async* {
+  final service = await ref.watch(tagsServiceProvider.future);
+  yield* service.watchAllTags();
 });
 
 final readyAudioAssetProvider = StreamProvider.family<MediaAsset?, String>((

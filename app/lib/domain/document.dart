@@ -116,6 +116,23 @@ class PotokDocument {
       {'insert': '$trimmed\n'},
     ]);
   }
+
+  PotokDocument appendImage(String assetId, {String alt = 'Изображение'}) {
+    if (assetId.isEmpty || assetId.contains(RegExp(r'[/\\?#]'))) {
+      throw ArgumentError.value(assetId, 'assetId', 'invalid managed asset id');
+    }
+    return PotokDocument._([
+      ...ops,
+      {
+        'insert': {'image': 'asset://$assetId'},
+        'attributes': {
+          'alt': alt.trim().isEmpty ? 'Изображение' : alt.trim(),
+          'display': 'wide',
+        },
+      },
+      {'insert': '\n'},
+    ]);
+  }
 }
 
 Map<String, Object?> _copyJsonObject(Map<String, Object?> source) =>

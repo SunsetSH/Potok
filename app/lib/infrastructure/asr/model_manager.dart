@@ -31,6 +31,8 @@ class ModelManifest {
   final String modelType;
   final List<String> languages;
   final String version;
+  final String license;
+  final int sizeBytes;
 
   /// Имя файла → ожидаемый SHA-256 (hex).
   final Map<String, String> files;
@@ -41,6 +43,8 @@ class ModelManifest {
     required this.modelType,
     required this.languages,
     required this.version,
+    required this.license,
+    required this.sizeBytes,
     required this.files,
   });
 
@@ -62,6 +66,8 @@ class ModelManifest {
     final engine = decoded['engine'];
     final modelType = decoded['model_type'];
     final version = decoded['version'];
+    final license = decoded['license'];
+    final sizeBytes = decoded['size_bytes'];
     final languagesRaw = decoded['languages'];
     final filesRaw = decoded['files'];
     if (modelId is! String || !_safeName.hasMatch(modelId)) {
@@ -72,7 +78,11 @@ class ModelManifest {
     }
     if (modelType is! String ||
         languagesRaw is! List<Object?> ||
-        version is! String) {
+        version is! String ||
+        license is! String ||
+        license.isEmpty ||
+        sizeBytes is! int ||
+        sizeBytes <= 0) {
       throw const ModelPackException('манифест повреждён');
     }
     if (filesRaw is! Map<String, Object?> || filesRaw.isEmpty) {
@@ -92,9 +102,22 @@ class ModelManifest {
       modelType: modelType,
       languages: languagesRaw.whereType<String>().toList(growable: false),
       version: version,
+      license: license,
+      sizeBytes: sizeBytes,
       files: files,
     );
   }
+
+  Map<String, Object?> toJson() => {
+    'model_id': modelId,
+    'engine': engine,
+    'model_type': modelType,
+    'languages': languages,
+    'version': version,
+    'license': license,
+    'size_bytes': sizeBytes,
+    'files': files,
+  };
 }
 
 /// Установка, проверка и активация локальных ASR model pack'ов (ADR-002).
@@ -134,9 +157,80 @@ class AsrModelManager implements ActiveModelLocator {
     }
     final manifest = ModelManifest.parse(await manifestFile.readAsString());
 
+    _validateCompatibility(manifest);
+    return _installFiles(source, manifest);
+  }
+
+  /// Imports the directory layout distributed by the official sherpa-onnx
+  /// Whisper model releases. The selected local folder is the initial trust
+  /// anchor; after staging, every installed byte is pinned in our manifest.
+  Future<String> installWhisperDirectory(String sourceDir) async {
+    final source = Directory(sourceDir);
+    if (!source.existsSync()) {
+      throw const ModelPackException('папка модели не найдена');
+    }
+    final existingManifest = File(p.join(source.path, manifestFileName));
+    if (existingManifest.existsSync()) {
+      return installFromDirectory(sourceDir);
+    }
+    final files = source.listSync().whereType<File>().toList(growable: false);
+    File pick(String marker) {
+      final int8 = files.where(
+        (file) =>
+            p.basename(file.path).toLowerCase().contains(marker) &&
+            p.basename(file.path).toLowerCase().endsWith('.int8.onnx'),
+      );
+      if (int8.isNotEmpty) return int8.first;
+      final fp32 = files.where(
+        (file) =>
+            p.basename(file.path).toLowerCase().contains(marker) &&
+            p.basename(file.path).toLowerCase().endsWith('.onnx'),
+      );
+      if (fp32.isNotEmpty) return fp32.first;
+      throw ModelPackException('в папке нет Whisper $marker model');
+    }
+
+    final encoder = pick('encoder');
+    final decoder = pick('decoder');
+    final tokens = files.where(
+      (file) => p.basename(file.path).toLowerCase().endsWith('tokens.txt'),
+    );
+    if (tokens.isEmpty) {
+      throw const ModelPackException('в папке нет Whisper tokens.txt');
+    }
+    final selected = <File>[encoder, decoder, tokens.first];
+    final hashes = <String, String>{};
+    var sizeBytes = 0;
+    for (final file in selected) {
+      final name = p.basename(file.path);
+      hashes[name] = await _sha256Hex(file);
+      sizeBytes += await file.length();
+    }
+    var modelId = p
+        .basename(source.path)
+        .toLowerCase()
+        .replaceAll(RegExp('[^a-z0-9._-]+'), '-');
+    modelId = modelId.replaceAll(RegExp('^-+|-+\$'), '');
+    if (modelId.isEmpty) modelId = 'whisper-model';
+    if (modelId.length > 80) modelId = modelId.substring(0, 80);
+    final manifest = ModelManifest(
+      modelId: modelId,
+      engine: 'sherpa-onnx',
+      modelType: 'whisper',
+      languages: const ['multilingual'],
+      version: 'official-import-1',
+      license: 'MIT',
+      sizeBytes: sizeBytes,
+      files: hashes,
+    );
+    return _installFiles(source, manifest);
+  }
+
+  Future<String> _installFiles(Directory source, ModelManifest manifest) async {
     await modelsRoot.create(recursive: true);
-    final partial =
-        Directory(p.join(modelsRoot.path, manifest.modelId + _partialSuffix));
+    final partial = Directory(
+      p.join(modelsRoot.path, manifest.modelId + _partialSuffix),
+    );
     try {
       if (partial.existsSync()) {
         await partial.delete(recursive: true);
@@ -147,16 +241,18 @@ class AsrModelManager implements ActiveModelLocator {
         if (!sourceFile.existsSync()) {
           throw ModelPackException('в пакете нет файла ${entry.key}');
         }
-        final copied =
-            await sourceFile.copy(p.join(partial.path, entry.key));
+        final copied = await sourceFile.copy(p.join(partial.path, entry.key));
         // Hash считается по копии: проверяем и исходник, и сам перенос.
         final actual = await _sha256Hex(copied);
         if (actual != entry.value) {
           throw ModelPackException(
-              'контрольная сумма не совпадает: ${entry.key}');
+            'контрольная сумма не совпадает: ${entry.key}',
+          );
         }
       }
-      await manifestFile.copy(p.join(partial.path, manifestFileName));
+      await File(
+        p.join(partial.path, manifestFileName),
+      ).writeAsString(json.encode(manifest.toJson()), flush: true);
 
       final target = Directory(p.join(modelsRoot.path, manifest.modelId));
       if (target.existsSync()) {
@@ -203,6 +299,7 @@ class AsrModelManager implements ActiveModelLocator {
       throw const ModelPackException('модель не установлена');
     }
     final manifest = ModelManifest.parse(await manifestFile.readAsString());
+    _validateCompatibility(manifest);
     for (final entry in manifest.files.entries) {
       final file = File(p.join(dir.path, entry.key));
       if (!file.existsSync()) {
@@ -211,7 +308,8 @@ class AsrModelManager implements ActiveModelLocator {
       final actual = await _sha256Hex(file);
       if (actual != entry.value) {
         throw ModelPackException(
-            'контрольная сумма не совпадает: ${entry.key}');
+          'контрольная сумма не совпадает: ${entry.key}',
+        );
       }
     }
     await settings.set(activeModelKey, modelId);
@@ -246,6 +344,11 @@ class AsrModelManager implements ActiveModelLocator {
     } on ModelPackException {
       return null;
     }
+    try {
+      _validateCompatibility(manifest);
+    } on ModelPackException {
+      return null;
+    }
     if (manifest.modelId != dirName) return null;
     for (final name in manifest.files.keys) {
       if (!File(p.join(dir.path, name)).existsSync()) return null;
@@ -256,5 +359,16 @@ class AsrModelManager implements ActiveModelLocator {
   static Future<String> _sha256Hex(File file) async {
     final digest = await sha256.bind(file.openRead()).first;
     return digest.toString();
+  }
+
+  static void _validateCompatibility(ModelManifest manifest) {
+    if (manifest.engine != 'sherpa-onnx' || manifest.modelType != 'whisper') {
+      throw const ModelPackException(
+        'поддерживаются только Whisper-модели для sherpa-onnx',
+      );
+    }
+    if (manifest.license != 'MIT' && manifest.license != 'Apache-2.0') {
+      throw const ModelPackException('лицензия модели не поддерживается');
+    }
   }
 }

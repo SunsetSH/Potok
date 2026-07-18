@@ -3,9 +3,11 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:drift/native.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:potok/application/settings_service.dart';
+import 'package:potok/infrastructure/asr/bundled_model_installer.dart';
 import 'package:potok/infrastructure/asr/model_manager.dart';
 import 'package:potok/infrastructure/db/database.dart';
 
@@ -53,15 +55,22 @@ void main() {
           ? '0' * 64
           : sha256.convert(bytes).toString();
     }
-    await File(p.join(source.path, AsrModelManager.manifestFileName))
-        .writeAsString(json.encode({
-      'model_id': modelId,
-      'engine': 'sherpa-onnx',
-      'model_type': 'whisper',
-      'languages': ['ru', 'en'],
-      'version': '1',
-      'files': files,
-    }));
+    await File(
+      p.join(source.path, AsrModelManager.manifestFileName),
+    ).writeAsString(
+      json.encode({
+        'model_id': modelId,
+        'engine': 'sherpa-onnx',
+        'model_type': 'whisper',
+        'languages': ['ru', 'en'],
+        'version': '1',
+        'license': 'MIT',
+        'size_bytes': contents.values
+            .map((value) => utf8.encode(value).length)
+            .fold<int>(0, (sum, value) => sum + value),
+        'files': files,
+      }),
+    );
   }
 
   List<String> rootEntries() => modelsRoot
@@ -74,8 +83,7 @@ void main() {
       await writePack();
       final id = await manager.installFromDirectory(source.path);
       expect(id, 'whisper-tiny');
-      expect(rootEntries(), ['whisper-tiny'],
-          reason: 'нет .partial-остатков');
+      expect(rootEntries(), ['whisper-tiny'], reason: 'нет .partial-остатков');
       expect(
         File(p.join(modelsRoot.path, id, 'encoder.int8.onnx')).existsSync(),
         isTrue,
@@ -88,25 +96,29 @@ void main() {
       expect(installed.single.engine, 'sherpa-onnx');
     });
 
-    test('hash mismatch -> ModelPackException, models dir stays clean',
-        () async {
-      await writePack(corruptHashOf: 'tokens.txt');
-      await expectLater(
-        manager.installFromDirectory(source.path),
-        throwsA(isA<ModelPackException>()),
-      );
-      expect(rootEntries(), isEmpty);
-    });
+    test(
+      'hash mismatch -> ModelPackException, models dir stays clean',
+      () async {
+        await writePack(corruptHashOf: 'tokens.txt');
+        await expectLater(
+          manager.installFromDirectory(source.path),
+          throwsA(isA<ModelPackException>()),
+        );
+        expect(rootEntries(), isEmpty);
+      },
+    );
 
-    test('missing pack file -> ModelPackException, models dir stays clean',
-        () async {
-      await writePack(omitFile: 'decoder.int8.onnx');
-      await expectLater(
-        manager.installFromDirectory(source.path),
-        throwsA(isA<ModelPackException>()),
-      );
-      expect(rootEntries(), isEmpty);
-    });
+    test(
+      'missing pack file -> ModelPackException, models dir stays clean',
+      () async {
+        await writePack(omitFile: 'decoder.int8.onnx');
+        await expectLater(
+          manager.installFromDirectory(source.path),
+          throwsA(isA<ModelPackException>()),
+        );
+        expect(rootEntries(), isEmpty);
+      },
+    );
 
     test('missing manifest -> ModelPackException', () async {
       await expectLater(
@@ -114,6 +126,54 @@ void main() {
         throwsA(isA<ModelPackException>()),
       );
     });
+
+    test('rejects incompatible engine before copying', () async {
+      await writePack();
+      final manifestFile = File(
+        p.join(source.path, AsrModelManager.manifestFileName),
+      );
+      final manifest = json.decode(await manifestFile.readAsString()) as Map;
+      manifest['engine'] = 'other-engine';
+      await manifestFile.writeAsString(json.encode(manifest));
+      await expectLater(
+        manager.installFromDirectory(source.path),
+        throwsA(isA<ModelPackException>()),
+      );
+      expect(rootEntries(), isEmpty);
+    });
+
+    test(
+      'imports official Whisper directory and pins selected int8 files',
+      () async {
+        await File(
+          p.join(source.path, 'tiny-encoder.int8.onnx'),
+        ).writeAsString('encoder-int8');
+        await File(
+          p.join(source.path, 'tiny-encoder.onnx'),
+        ).writeAsString('encoder-fp32');
+        await File(
+          p.join(source.path, 'tiny-decoder.int8.onnx'),
+        ).writeAsString('decoder-int8');
+        await File(
+          p.join(source.path, 'tiny-tokens.txt'),
+        ).writeAsString('tokens');
+
+        final id = await manager.installWhisperDirectory(source.path);
+        final installed = await manager.installedManifest(id);
+
+        expect(installed, isNotNull);
+        expect(installed!.license, 'MIT');
+        expect(installed.files.keys, {
+          'tiny-encoder.int8.onnx',
+          'tiny-decoder.int8.onnx',
+          'tiny-tokens.txt',
+        });
+        expect(
+          File(p.join(modelsRoot.path, id, 'tiny-encoder.onnx')).existsSync(),
+          isFalse,
+        );
+      },
+    );
   });
 
   group('activate / activeModelDir', () {
@@ -128,8 +188,9 @@ void main() {
     test('activate rejects tampered installed pack, key unchanged', () async {
       await writePack();
       final id = await manager.installFromDirectory(source.path);
-      await File(p.join(modelsRoot.path, id, 'tokens.txt'))
-          .writeAsString('tampered');
+      await File(
+        p.join(modelsRoot.path, id, 'tokens.txt'),
+      ).writeAsString('tampered');
       await expectLater(
         manager.activate(id),
         throwsA(isA<ModelPackException>()),
@@ -150,10 +211,10 @@ void main() {
     test('skips broken folders without deleting them', () async {
       await writePack();
       await manager.installFromDirectory(source.path);
-      final broken = Directory(p.join(modelsRoot.path, 'broken'))
-        ..createSync();
-      await File(p.join(broken.path, AsrModelManager.manifestFileName))
-          .writeAsString('not a json');
+      final broken = Directory(p.join(modelsRoot.path, 'broken'))..createSync();
+      await File(
+        p.join(broken.path, AsrModelManager.manifestFileName),
+      ).writeAsString('not a json');
       final noManifest = Directory(p.join(modelsRoot.path, 'empty'))
         ..createSync();
 
@@ -161,6 +222,49 @@ void main() {
       expect(installed.map((m) => m.modelId), ['whisper-tiny']);
       expect(broken.existsSync(), isTrue);
       expect(noManifest.existsSync(), isTrue);
+    });
+  });
+
+  group('bundled model bootstrap', () {
+    test('installs, verifies and activates the packaged model', () async {
+      await writePack(
+        modelId: BundledModelInstaller.modelId,
+        contents: const {
+          'tiny-encoder.int8.onnx': 'encoder-bytes',
+          'tiny-decoder.int8.onnx': 'decoder-bytes',
+          'tiny-tokens.txt': 'token-bytes',
+        },
+      );
+      final files = <String, Uint8List>{};
+      for (final name in [
+        AsrModelManager.manifestFileName,
+        'tiny-encoder.int8.onnx',
+        'tiny-decoder.int8.onnx',
+        'tiny-tokens.txt',
+      ]) {
+        files['assets/models/default/$name'] = await File(
+          p.join(source.path, name),
+        ).readAsBytes();
+      }
+
+      await BundledModelInstaller(
+        assets: _MapAssetBundle(files),
+      ).ensureInstalled(manager);
+
+      expect(await manager.activeModel(), BundledModelInstaller.modelId);
+      expect(await manager.activeModelDir(), isNotNull);
+    });
+
+    test('does not replace an already selected valid model', () async {
+      await writePack(modelId: 'user-model');
+      await manager.installFromDirectory(source.path);
+      await manager.activate('user-model');
+      final assets = _MapAssetBundle(const {});
+
+      await BundledModelInstaller(assets: assets).ensureInstalled(manager);
+
+      expect(await manager.activeModel(), 'user-model');
+      expect(assets.loads, 0);
     });
   });
 
@@ -176,12 +280,30 @@ void main() {
       await writePack();
       final id = await dev.installFromDirectory(source.path);
       await dev.activate(id);
-      expect(await dev.activeModelDir(), p.join(modelsRoot.path, id),
-          reason: 'активная модель имеет приоритет над fallback');
+      expect(
+        await dev.activeModelDir(),
+        p.join(modelsRoot.path, id),
+        reason: 'активная модель имеет приоритет над fallback',
+      );
     });
 
     test('no active model and no fallback -> null', () async {
       expect(await manager.activeModelDir(), isNull);
     });
   });
+}
+
+class _MapAssetBundle extends CachingAssetBundle {
+  final Map<String, Uint8List> files;
+  int loads = 0;
+
+  _MapAssetBundle(this.files);
+
+  @override
+  Future<ByteData> load(String key) async {
+    loads++;
+    final bytes = files[key];
+    if (bytes == null) throw StateError('missing asset: $key');
+    return ByteData.sublistView(bytes);
+  }
 }

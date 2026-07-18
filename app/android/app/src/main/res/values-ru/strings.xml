@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Поток</string>
+    <string name="share_target_label">Сохранить в «Поток»</string>
+    <string name="shortcut_text_short">Новая заметка</string>
+    <string name="shortcut_text_long">Создать текстовую заметку</string>
+    <string name="shortcut_audio_short">Записать аудио</string>
+    <string name="shortcut_audio_long">Создать аудиозаметку</string>
+    <string name="widget_description">Быстрый ввод в «Поток»</string>
+    <string name="widget_no_project">Без проекта</string>
+    <string name="widget_text">+Текст</string>
+    <string name="widget_audio">+Аудио</string>
+    <string name="widget_text_description">Создать текстовую заметку</string>
+    <string name="widget_audio_description">Начать аудиозаметку</string>
+</resources>

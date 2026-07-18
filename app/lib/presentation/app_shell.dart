@@ -1,15 +1,16 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../domain/types.dart';
+import '../application/note_list_query.dart';
 import '../infrastructure/db/database.dart';
+import 'app_shortcuts.dart';
 import 'capture_sheet.dart';
 import 'note_detail_pane.dart';
 import 'notes_list_pane.dart';
 import 'providers.dart';
-import 'session_history.dart';
 import 'sidebar.dart';
 import 'theme.dart';
 
@@ -27,11 +28,6 @@ class AppShell extends ConsumerWidget {
     ref.listen(imageRecoveryProvider, (previous, next) {
       if (next.hasError && previous?.error != next.error) {
         debugPrint('image recovery failed: ${next.error.runtimeType}');
-      }
-    });
-    ref.listen(sessionRecoveryProvider, (previous, next) {
-      if (next.hasError && previous?.error != next.error) {
-        debugPrint('session recovery failed: ${next.error.runtimeType}');
       }
     });
     final notes = ref.watch(notesServiceProvider);
@@ -68,6 +64,62 @@ class AppShell extends ConsumerWidget {
   }
 }
 
+class _EscapeIntent extends Intent {
+  const _EscapeIntent();
+}
+
+/// Esc внутри текущего route (ТЗ 0.6.6): сначала снимает фокус с текстового
+/// ввода, иначе выполняет [onEscape]. Диалоги — отдельные route'ы, их Esc
+/// (DismissIntent) не затрагивается.
+class EscapeScope extends StatefulWidget {
+  final VoidCallback onEscape;
+  final Widget child;
+
+  const EscapeScope({super.key, required this.onEscape, required this.child});
+
+  @override
+  State<EscapeScope> createState() => _EscapeScopeState();
+}
+
+class _EscapeScopeState extends State<EscapeScope> {
+  final _fallbackFocus = FocusNode(debugLabel: 'escape-scope');
+
+  @override
+  void dispose() {
+    _fallbackFocus.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Shortcuts(
+      shortcuts: const {
+        SingleActivator(LogicalKeyboardKey.escape): _EscapeIntent(),
+      },
+      child: Actions(
+        actions: {
+          _EscapeIntent: CallbackAction<_EscapeIntent>(
+            onInvoke: (_) {
+              final focused = FocusManager.instance.primaryFocus;
+              if (focused != null && isTextEditingFocused()) {
+                focused.unfocus();
+                // Keep subsequent Esc events inside this route. Without a
+                // fallback focus, the next key goes to the root focus scope
+                // and cannot close narrow detail or clear the selection.
+                _fallbackFocus.requestFocus();
+              } else {
+                widget.onEscape();
+              }
+              return null;
+            },
+          ),
+        },
+        child: Focus(focusNode: _fallbackFocus, child: widget.child),
+      ),
+    );
+  }
+}
+
 class _Shell extends ConsumerWidget {
   const _Shell();
 
@@ -88,45 +140,41 @@ class _Shell extends ConsumerWidget {
         final wide = constraints.maxWidth >= 900;
         if (wide) {
           final listWidth = (constraints.maxWidth * 0.3).clamp(330.0, 430.0);
-          return Scaffold(
-            backgroundColor: c.canvas,
-            floatingActionButton: _CaptureFab(),
-            bottomNavigationBar: const _SessionBar(),
-            body: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const Sidebar(),
-                Container(
-                  width: listWidth,
-                  decoration: BoxDecoration(
-                    border: Border(right: BorderSide(color: c.line)),
+          return EscapeScope(
+            // Esc на широком макете снимает выделение (ТЗ 0.6.6).
+            onEscape: () {
+              ref.read(bulkSelectedNoteIdsProvider.notifier).clear();
+              ref.read(selectedNoteIdProvider.notifier).select(null);
+            },
+            child: Scaffold(
+              backgroundColor: c.canvas,
+              floatingActionButton: _CaptureFab(),
+              body: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Sidebar(),
+                  Container(
+                    width: listWidth,
+                    decoration: BoxDecoration(
+                      border: Border(right: BorderSide(color: c.line)),
+                    ),
+                    child: NotesListPane(
+                      onOpenNote: (note) => _openNote(context, ref, note, true),
+                    ),
                   ),
-                  child: NotesListPane(
-                    onOpenNote: (note) => _openNote(context, ref, note, true),
-                  ),
-                ),
-                const Expanded(child: NoteDetailPane()),
-              ],
+                  const Expanded(child: NoteDetailPane()),
+                ],
+              ),
             ),
           );
         }
         return Scaffold(
           backgroundColor: c.surface,
-          drawer: Drawer(
-            backgroundColor: c.surface2,
-            child: Builder(
-              builder: (drawerContext) =>
-                  Sidebar(onNavigate: () => Navigator.of(drawerContext).pop()),
-            ),
-          ),
           floatingActionButton: _CaptureFab(),
-          bottomNavigationBar: const _SessionBar(),
+          bottomNavigationBar: const _MobileNavigation(),
           body: SafeArea(
-            child: Builder(
-              builder: (bodyContext) => NotesListPane(
-                showMenuButton: true,
-                onOpenNote: (note) => _openNote(bodyContext, ref, note, false),
-              ),
+            child: NotesListPane(
+              onOpenNote: (note) => _openNote(context, ref, note, false),
             ),
           ),
         );
@@ -135,144 +183,183 @@ class _Shell extends ConsumerWidget {
   }
 }
 
-class _SessionBar extends ConsumerStatefulWidget {
-  const _SessionBar();
+class _MobileNavigation extends ConsumerStatefulWidget {
+  const _MobileNavigation();
 
   @override
-  ConsumerState<_SessionBar> createState() => _SessionBarState();
+  ConsumerState<_MobileNavigation> createState() => _MobileNavigationState();
 }
 
-class _SessionBarState extends ConsumerState<_SessionBar> {
-  Timer? _ticker;
+class _MobileNavigationState extends ConsumerState<_MobileNavigation> {
+  int? _selectedTab;
 
-  @override
-  void initState() {
-    super.initState();
-    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() {});
+  void _leaveSearch() {
+    ref.read(searchFocusProvider).unfocus();
+  }
+
+  void _focusSearch() {
+    final focus = ref.read(searchFocusProvider);
+    // Повторный requestFocus для уже focused node не поднимает Android IME.
+    // Короткий re-focus делает повторное нажатие вкладки детерминированным.
+    focus.unfocus();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      focus.requestFocus();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          unawaited(
+            SystemChannels.textInput.invokeMethod<void>('TextInput.show'),
+          );
+        }
+      });
     });
   }
 
-  @override
-  void dispose() {
-    _ticker?.cancel();
-    super.dispose();
-  }
-
-  Future<void> _run(Session session, Future<void> Function() action) async {
-    try {
-      await action();
-    } catch (error) {
-      debugPrint('session action failed: ${error.runtimeType}');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Состояние сессии уже изменилось')),
-        );
-      }
+  Future<void> _showSections(BuildContext context, WidgetRef ref) async {
+    Future<void> select(NavSection section) async {
+      ref.read(navSectionProvider.notifier).select(section);
+      if (context.mounted) Navigator.of(context).pop();
     }
+
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (sheetContext) => Consumer(
+        builder: (sheetContext, sheetRef, _) {
+          final projects =
+              sheetRef.watch(projectsProvider).value ?? const <Project>[];
+          final counts =
+              sheetRef.watch(projectNoteCountsProvider).value ??
+              const <String, int>{};
+          final summary =
+              sheetRef.watch(navigationSummaryProvider).value ??
+              NavigationSummary.empty;
+          return SafeArea(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.78,
+              ),
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+                children: [
+                  Row(
+                    children: [
+                      const Expanded(
+                        child: Text(
+                          'Проекты и разделы',
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      FilledButton.tonalIcon(
+                        onPressed: () =>
+                            showCreateProjectDialog(sheetContext, ref),
+                        icon: const Icon(Icons.add_rounded),
+                        label: const Text('Проект'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  ListTile(
+                    leading: const Icon(Icons.crop_square_rounded),
+                    title: const Text('Без проекта'),
+                    trailing: Text('${summary.noProject}'),
+                    onTap: () => select(const NoProjectSection()),
+                  ),
+                  for (final project in projects)
+                    ListTile(
+                      leading: Icon(
+                        Icons.circle,
+                        size: 13,
+                        color: Color(project.colorArgb),
+                      ),
+                      title: Text(project.name),
+                      trailing: Text('${counts[project.id] ?? 0}'),
+                      onTap: () => select(ProjectSection(project.id)),
+                    ),
+                  const Divider(),
+                  ListTile(
+                    leading: const Icon(Icons.delete_outline_rounded),
+                    title: const Text('Корзина'),
+                    trailing: Text('${summary.trash}'),
+                    onTap: () => select(const TrashSection()),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.settings_outlined),
+                    title: const Text('Настройки'),
+                    onTap: () async {
+                      Navigator.of(sheetContext).pop();
+                      await showAppearanceDialog(context, ref);
+                    },
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final session = ref.watch(currentSessionProvider).value;
-    if (session == null) return const SizedBox.shrink();
-    final c = PotokColors.of(context);
-    final elapsed = DateTime.now().toUtc().difference(
-      DateTime.fromMillisecondsSinceEpoch(session.startedAtUtc, isUtc: true),
-    );
-    final safeElapsed = elapsed.isNegative ? Duration.zero : elapsed;
-    final hours = safeElapsed.inHours.toString().padLeft(2, '0');
-    final minutes = (safeElapsed.inMinutes % 60).toString().padLeft(2, '0');
-    final seconds = (safeElapsed.inSeconds % 60).toString().padLeft(2, '0');
-    final active = session.state == SessionState.active;
-
-    return Material(
-      color: c.surface2,
-      elevation: 8,
-      child: SafeArea(
-        top: false,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(minHeight: 58),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-            child: Row(
-              children: [
-                Icon(
-                  active ? Icons.meeting_room_rounded : Icons.pause_circle,
-                  color: active ? c.accent : c.muted,
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: InkWell(
-                    key: const ValueKey('open-current-session-history'),
-                    borderRadius: BorderRadius.circular(c.radiusSmall),
-                    onTap: () => showSessionHistory(
-                      context,
-                      initialSessionId: session.id,
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          session.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: c.text,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        Text(
-                          '${active ? 'Активна' : 'Приостановлена'} · '
-                          '$hours:$minutes:$seconds',
-                          style: TextStyle(color: c.muted, fontSize: 11),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                IconButton(
-                  key: const ValueKey('session-capture'),
-                  tooltip: 'Новая заметка в сессии',
-                  onPressed: active
-                      ? () => showCaptureSheet(context, sessionId: session.id)
-                      : null,
-                  icon: const Icon(Icons.add_rounded),
-                ),
-                IconButton(
-                  key: const ValueKey('session-pause-resume'),
-                  tooltip: active ? 'Приостановить' : 'Продолжить',
-                  onPressed: () async {
-                    final service = await ref.read(
-                      sessionsServiceProvider.future,
-                    );
-                    await _run(
-                      session,
-                      () => active
-                          ? service.pause(session)
-                          : service.resume(session),
-                    );
-                  },
-                  icon: Icon(
-                    active ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                  ),
-                ),
-                TextButton(
-                  key: const ValueKey('session-complete'),
-                  onPressed: () async {
-                    final service = await ref.read(
-                      sessionsServiceProvider.future,
-                    );
-                    await _run(session, () => service.complete(session));
-                  },
-                  child: const Text('Завершить'),
-                ),
-              ],
-            ),
-          ),
+    final section = ref.watch(navSectionProvider);
+    final searching = ref.watch(searchQueryProvider).trim().isNotEmpty;
+    final sectionTab = switch (section) {
+      FavoritesSection() => 2,
+      AllNotesSection() => 0,
+      _ => 1,
+    };
+    final selected = searching ? 3 : (_selectedTab == 3 ? 3 : sectionTab);
+    return NavigationBar(
+      selectedIndex: selected,
+      height: 68,
+      onDestinationSelected: (index) {
+        setState(() => _selectedTab = index);
+        switch (index) {
+          case 0:
+            _leaveSearch();
+            ref.read(searchQueryProvider.notifier).set('');
+            ref
+                .read(navSectionProvider.notifier)
+                .select(const AllNotesSection());
+          case 1:
+            _leaveSearch();
+            unawaited(_showSections(context, ref));
+          case 2:
+            _leaveSearch();
+            ref.read(searchQueryProvider.notifier).set('');
+            ref
+                .read(navSectionProvider.notifier)
+                .select(const FavoritesSection());
+          case 3:
+            ref
+                .read(navSectionProvider.notifier)
+                .select(const AllNotesSection());
+            _focusSearch();
+        }
+      },
+      destinations: const [
+        NavigationDestination(
+          icon: Icon(Icons.notes_outlined),
+          selectedIcon: Icon(Icons.notes_rounded),
+          label: 'Все',
         ),
-      ),
+        NavigationDestination(
+          icon: Icon(Icons.folder_outlined),
+          selectedIcon: Icon(Icons.folder_rounded),
+          label: 'Проекты',
+        ),
+        NavigationDestination(
+          icon: Icon(Icons.star_border_rounded),
+          selectedIcon: Icon(Icons.star_rounded),
+          label: 'Избранное',
+        ),
+        NavigationDestination(icon: Icon(Icons.search_rounded), label: 'Поиск'),
+      ],
     );
   }
 }
@@ -288,16 +375,19 @@ class _CaptureFab extends StatelessWidget {
   }
 }
 
-/// Узкий макет: detail поверх списка (push).
+/// Узкий макет: detail поверх списка (push). Esc закрывает detail.
 class _DetailPage extends StatelessWidget {
   const _DetailPage();
 
   @override
   Widget build(BuildContext context) {
     final c = PotokColors.of(context);
-    return Scaffold(
-      backgroundColor: c.surface,
-      body: const SafeArea(child: NoteDetailPane(showBack: true)),
+    return EscapeScope(
+      onEscape: () => Navigator.of(context).maybePop(),
+      child: Scaffold(
+        backgroundColor: c.surface,
+        body: const SafeArea(child: NoteDetailPane(showBack: true)),
+      ),
     );
   }
 }

@@ -120,5 +120,21 @@ void main() {
 
       expect(document.managedAssetIds, {'IMAGE-1', 'audio-2'});
     });
+
+    test(
+      'appendImage creates a managed embed without plain-text pollution',
+      () {
+        final document = PotokDocument.fromPlainText(
+          'Подпись',
+        ).appendImage('image-42', alt: 'Скриншот');
+
+        expect(document.plainText, 'Подпись');
+        expect(document.managedAssetIds, {'image-42'});
+        final imageOp = document.deltaOps.firstWhere(
+          (op) => op['insert'] is Map<String, Object?>,
+        );
+        expect(imageOp['attributes'], {'alt': 'Скриншот', 'display': 'wide'});
+      },
+    );
   });
 }

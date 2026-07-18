@@ -19,19 +19,23 @@ class DraftsService {
     String? projectId,
     String? tagIdsJson,
   }) async {
-    await db.into(db.drafts).insertOnConflictUpdate(DraftsCompanion.insert(
-          surfaceId: surfaceId,
-          noteId: Value(noteId),
-          documentJson: documentJson,
-          projectId: Value(projectId),
-          tagIdsJson: Value(tagIdsJson),
-          updatedAtUtc: clock.nowUtcMillis(),
-        ));
+    await db
+        .into(db.drafts)
+        .insertOnConflictUpdate(
+          DraftsCompanion.insert(
+            surfaceId: surfaceId,
+            noteId: Value(noteId),
+            documentJson: documentJson,
+            projectId: Value(projectId),
+            tagIdsJson: Value(tagIdsJson),
+            updatedAtUtc: clock.nowUtcMillis(),
+          ),
+        );
   }
 
-  Future<Draft?> load(String surfaceId) =>
-      (db.select(db.drafts)..where((d) => d.surfaceId.equals(surfaceId)))
-          .getSingleOrNull();
+  Future<Draft?> load(String surfaceId) => (db.select(
+    db.drafts,
+  )..where((d) => d.surfaceId.equals(surfaceId))).getSingleOrNull();
 
   /// Идемпотентно: повторный clear после commit — no-op.
   Future<void> clear(String surfaceId) =>

@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -8,25 +10,15 @@ import '../application/notes_service.dart';
 import '../application/settings_service.dart';
 import '../infrastructure/asr/model_manager.dart';
 import '../infrastructure/db/database.dart';
+import 'android_launch_intents.dart';
 import 'data_section.dart';
+import 'entity_color_palette.dart';
 import 'move_note.dart';
 import 'providers.dart';
-import 'session_history.dart';
+import 'snackbars.dart';
+import 'tag_management.dart';
 import 'theme.dart';
-
-/// Предустановленные цвета проектов (диалог «+ проект»).
-const projectPresetColors = <int>[
-  0xFF4E75DB,
-  0xFF8C65C5,
-  0xFFD07B36,
-  0xFF23825E,
-  0xFFC53C4B,
-  0xFF2364C4,
-  0xFF1E8A8A,
-  0xFFAD7A00,
-  0xFF64707F,
-  0xFF7656BD,
-];
+import 'windows_integration.dart';
 
 /// Левая панель: бренд, навигация, проекты, корзина и настройки.
 class Sidebar extends ConsumerStatefulWidget {
@@ -67,9 +59,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
       debugPrint('smart view open failed: ${error.runtimeType}');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Представление повреждено или устарело'),
-          ),
+          PotokSnackBar(content: Text('Представление повреждено или устарело')),
         );
       }
     }
@@ -143,7 +133,6 @@ class _SidebarState extends ConsumerState<Sidebar> {
     final projects = ref.watch(projectsProvider).value ?? const <Project>[];
     final smartViews =
         ref.watch(smartViewsProvider).value ?? const <SmartView>[];
-    final currentSession = ref.watch(currentSessionProvider).value;
 
     return Container(
       width: 232,
@@ -229,29 +218,6 @@ class _SidebarState extends ConsumerState<Sidebar> {
               ],
             ),
           ),
-          _NavItem(
-            icon: currentSession == null
-                ? Icons.play_circle_outline_rounded
-                : Icons.meeting_room_outlined,
-            label: currentSession?.title ?? 'Начать сессию',
-            active: false,
-            onTap: () {
-              if (currentSession == null) {
-                showStartSessionDialog(context, ref, projects);
-              } else {
-                showSessionHistory(
-                  context,
-                  initialSessionId: currentSession.id,
-                );
-              }
-            },
-          ),
-          _NavItem(
-            icon: Icons.history_rounded,
-            label: 'История сессий',
-            active: false,
-            onTap: () => showSessionHistory(context),
-          ),
           Divider(color: c.line, height: 17),
           _NavItem(
             icon: Icons.delete_outline_rounded,
@@ -270,121 +236,6 @@ class _SidebarState extends ConsumerState<Sidebar> {
       ),
     );
   }
-}
-
-Future<void> showStartSessionDialog(
-  BuildContext context,
-  WidgetRef ref,
-  List<Project> projects,
-) async {
-  if (projects.isEmpty) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Сначала создайте проект для сессии')),
-    );
-    return;
-  }
-  final now = DateTime.now();
-  final titleController = TextEditingController(
-    text:
-        'Сессия ${now.day.toString().padLeft(2, '0')}.'
-        '${now.month.toString().padLeft(2, '0')}.${now.year} '
-        '${now.hour.toString().padLeft(2, '0')}:'
-        '${now.minute.toString().padLeft(2, '0')}',
-  );
-  var projectId = projects.first.id;
-  String? error;
-  var submitting = false;
-  await showDialog<void>(
-    context: context,
-    builder: (dialogContext) => StatefulBuilder(
-      builder: (context, setState) => AlertDialog(
-        title: const Text('Новая сессия'),
-        content: SizedBox(
-          width: 420,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              DropdownButtonFormField<String>(
-                key: const ValueKey('session-project'),
-                initialValue: projectId,
-                decoration: const InputDecoration(
-                  labelText: 'Проект',
-                  border: OutlineInputBorder(),
-                ),
-                items: [
-                  for (final project in projects)
-                    DropdownMenuItem(
-                      value: project.id,
-                      child: Text(project.name),
-                    ),
-                ],
-                onChanged: submitting
-                    ? null
-                    : (value) {
-                        if (value != null) setState(() => projectId = value);
-                      },
-              ),
-              const SizedBox(height: 14),
-              TextField(
-                key: const ValueKey('session-title'),
-                controller: titleController,
-                maxLength: 200,
-                decoration: InputDecoration(
-                  labelText: 'Название',
-                  errorText: error,
-                  border: const OutlineInputBorder(),
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: submitting ? null : () => Navigator.pop(dialogContext),
-            child: const Text('Отмена'),
-          ),
-          FilledButton(
-            key: const ValueKey('start-session'),
-            onPressed: submitting
-                ? null
-                : () async {
-                    final title = titleController.text.trim();
-                    if (title.isEmpty) {
-                      setState(() => error = 'Введите название');
-                      return;
-                    }
-                    setState(() {
-                      submitting = true;
-                      error = null;
-                    });
-                    try {
-                      final service = await ref.read(
-                        sessionsServiceProvider.future,
-                      );
-                      await service.start(projectId: projectId, title: title);
-                      if (dialogContext.mounted) Navigator.pop(dialogContext);
-                    } catch (failure) {
-                      debugPrint(
-                        'session start failed: ${failure.runtimeType}',
-                      );
-                      if (dialogContext.mounted) {
-                        setState(() {
-                          submitting = false;
-                          error = 'Не удалось начать сессию';
-                        });
-                      }
-                    }
-                  },
-            child: const Text('Начать'),
-          ),
-        ],
-      ),
-    ),
-  );
-  // showDialog completes when pop starts; keep the controller alive until the
-  // route's exit animation has detached its TextField.
-  await Future<void>.delayed(const Duration(milliseconds: 300));
-  titleController.dispose();
 }
 
 class _Brand extends StatelessWidget {
@@ -541,7 +392,7 @@ class _NavItem extends StatelessWidget {
 /// Диалог создания проекта: имя + выбор из предустановленных цветов.
 Future<void> showCreateProjectDialog(BuildContext context, WidgetRef ref) {
   final controller = TextEditingController();
-  var selectedColor = projectPresetColors.first;
+  var selectedColor = entityPresetColors.first;
   String? error;
   var submitting = false;
 
@@ -611,7 +462,7 @@ Future<void> showCreateProjectDialog(BuildContext context, WidgetRef ref) {
                     spacing: 8,
                     runSpacing: 8,
                     children: [
-                      for (final color in projectPresetColors)
+                      for (final color in entityPresetColors)
                         InkWell(
                           borderRadius: BorderRadius.circular(999),
                           onTap: () => setState(() => selectedColor = color),
@@ -629,10 +480,10 @@ Future<void> showCreateProjectDialog(BuildContext context, WidgetRef ref) {
                               ),
                             ),
                             child: selectedColor == color
-                                ? const Icon(
+                                ? Icon(
                                     Icons.check,
                                     size: 16,
-                                    color: Colors.white,
+                                    color: entityColorForeground(color),
                                   )
                                 : null,
                           ),
@@ -781,6 +632,49 @@ Future<void> showAppearanceDialog(BuildContext context, WidgetRef ref) {
                   Padding(
                     padding: const EdgeInsets.only(bottom: 8),
                     child: Text(
+                      'Теги',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: c.muted,
+                      ),
+                    ),
+                  ),
+                  const TagManagementSection(),
+                  if (windowsShellAvailable) ...[
+                    Divider(color: c.line, height: 24),
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        'Система',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: c.muted,
+                        ),
+                      ),
+                    ),
+                    const _SystemSettingsSection(),
+                  ],
+                  if (androidLaunchIntentsAvailable) ...[
+                    Divider(color: c.line, height: 24),
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        'Виджет Android',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: c.muted,
+                        ),
+                      ),
+                    ),
+                    const _AndroidWidgetSettingsSection(),
+                  ],
+                  Divider(color: c.line, height: 24),
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
                       'Данные',
                       style: TextStyle(
                         fontSize: 11,
@@ -806,6 +700,106 @@ Future<void> showAppearanceDialog(BuildContext context, WidgetRef ref) {
   );
 }
 
+class _AndroidWidgetSettingsSection extends ConsumerWidget {
+  const _AndroidWidgetSettingsSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final projects = ref.watch(projectsProvider).value ?? const <Project>[];
+    final selectedId = ref.watch(androidWidgetProjectProvider).value;
+    final validId = projects.any((project) => project.id == selectedId)
+        ? selectedId
+        : null;
+    return DropdownButtonFormField<String>(
+      key: const ValueKey('setting-android-widget-project'),
+      initialValue: validId ?? '',
+      isExpanded: true,
+      decoration: const InputDecoration(
+        labelText: 'Проект для быстрого ввода',
+        helperText: 'Его имя показывается в виджете 2×1',
+      ),
+      items: [
+        const DropdownMenuItem(value: '', child: Text('Без проекта')),
+        for (final project in projects)
+          DropdownMenuItem(value: project.id, child: Text(project.name)),
+      ],
+      onChanged: (value) {
+        unawaited(
+          ref
+              .read(settingsServiceProvider)
+              .set(SettingsService.androidWidgetProjectKey, value ?? '')
+              .catchError((Object error) {
+                debugPrint(
+                  'android widget setting failed: ${error.runtimeType}',
+                );
+              }),
+        );
+      },
+    );
+  }
+}
+
+/// Windows-only: опциональный tray lifecycle и глобальный hotkey (ТЗ 37.8).
+class _SystemSettingsSection extends ConsumerWidget {
+  const _SystemSettingsSection();
+
+  void _setFlag(WidgetRef ref, String key, bool value) {
+    unawaited(
+      ref.read(settingsServiceProvider).set(key, value ? '1' : '0').catchError((
+        Object e,
+      ) {
+        debugPrint('system setting save failed: ${e.runtimeType}');
+      }),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final c = PotokColors.of(context);
+    final trayEnabled = ref.watch(trayCloseEnabledProvider).value ?? false;
+    final hotkeyEnabled = ref.watch(globalHotkeyEnabledProvider).value ?? false;
+    final integration = ref.watch(windowsIntegrationProvider);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SwitchListTile(
+          key: const ValueKey('setting-tray-on-close'),
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Сворачивать в трей при закрытии окна'),
+          subtitle: const Text('Выход — через меню значка в трее'),
+          value: trayEnabled,
+          onChanged: (value) =>
+              _setFlag(ref, SettingsService.trayCloseKey, value),
+        ),
+        SwitchListTile(
+          key: const ValueKey('setting-global-hotkey'),
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Глобальная горячая клавиша Ctrl+Alt+N'),
+          subtitle: const Text('Открывает быструю заметку из любого окна'),
+          value: hotkeyEnabled,
+          onChanged: (value) =>
+              _setFlag(ref, SettingsService.globalHotkeyKey, value),
+        ),
+        if (integration != null)
+          ValueListenableBuilder<GlobalHotkeyStatus>(
+            valueListenable: integration.hotkeyStatus,
+            builder: (context, status, _) =>
+                status == GlobalHotkeyStatus.conflict
+                ? Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      'Ctrl+Alt+N занято другим приложением — глобальная '
+                      'клавиша не работает, остальное работает как обычно',
+                      style: TextStyle(fontSize: 11, color: c.danger),
+                    ),
+                  )
+                : const SizedBox.shrink(),
+          ),
+      ],
+    );
+  }
+}
+
 class _AudioSettingsSection extends ConsumerWidget {
   const _AudioSettingsSection();
 
@@ -822,7 +816,7 @@ class _AudioSettingsSection extends ConsumerWidget {
     } catch (error) {
       debugPrint('audio restore failed: ${error.runtimeType}');
       messenger.showSnackBar(
-        const SnackBar(content: Text('Не удалось восстановить аудио')),
+        PotokSnackBar(content: const Text('Не удалось восстановить аудио')),
       );
     }
   }
@@ -860,7 +854,7 @@ class _AudioSettingsSection extends ConsumerWidget {
     } catch (error) {
       debugPrint('audio purge failed: ${error.runtimeType}');
       messenger.showSnackBar(
-        const SnackBar(content: Text('Не удалось удалить аудио')),
+        PotokSnackBar(content: const Text('Не удалось удалить аудио')),
       );
     }
   }
@@ -876,6 +870,15 @@ class _AudioSettingsSection extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (Platform.isWindows) ...[
+          Text(
+            'Микрофон Windows',
+            style: TextStyle(fontWeight: FontWeight.w700, color: c.text),
+          ),
+          const SizedBox(height: 8),
+          _AudioInputDeviceSelector(),
+          const SizedBox(height: 14),
+        ],
         DropdownButtonFormField<int>(
           initialValue: bitRate,
           decoration: const InputDecoration(labelText: 'Качество записи'),
@@ -913,6 +916,13 @@ class _AudioSettingsSection extends ConsumerWidget {
                   .set(SettingsService.audioMaxMinutesKey, '$value'),
             );
           },
+        ),
+        const SizedBox(height: 12),
+        Text(
+          'При активной offline-модели новые записи сохраняются как '
+          'WAV PCM16 16 кГц (~110 МБ/ч), чтобы распознаваться без сервера. '
+          'Без модели используется компактный M4A.',
+          style: TextStyle(fontSize: 11, color: c.muted, height: 1.35),
         ),
         const SizedBox(height: 12),
         Container(
@@ -1012,6 +1022,89 @@ class _AudioSettingsSection extends ConsumerWidget {
   }
 }
 
+class _AudioInputDeviceSelector extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final selected = ref.watch(audioInputDeviceIdProvider).value;
+    final devicesAsync = ref.watch(audioInputDevicesProvider);
+    return devicesAsync.when(
+      loading: () => const LinearProgressIndicator(minHeight: 2),
+      error: (_, _) => Row(
+        children: [
+          const Expanded(child: Text('Не удалось получить список микрофонов')),
+          IconButton(
+            tooltip: 'Повторить',
+            onPressed: () => ref.invalidate(audioInputDevicesProvider),
+            icon: const Icon(Icons.refresh_rounded),
+          ),
+        ],
+      ),
+      data: (devices) {
+        final selectedExists =
+            selected == null || devices.any((device) => device.id == selected);
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<String?>(
+                    key: ValueKey(
+                      'audio-input-${selectedExists ? selected : 'missing'}-'
+                      '${devices.length}',
+                    ),
+                    initialValue: selectedExists ? selected : null,
+                    isExpanded: true,
+                    decoration: InputDecoration(
+                      labelText: 'Устройство ввода',
+                      errorText: selectedExists
+                          ? null
+                          : 'Выбранный микрофон отключён',
+                    ),
+                    items: [
+                      const DropdownMenuItem<String?>(
+                        value: null,
+                        child: Text('Системный по умолчанию'),
+                      ),
+                      for (final device in devices)
+                        DropdownMenuItem<String?>(
+                          value: device.id,
+                          child: Text(
+                            device.label,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                    ],
+                    onChanged: (value) => unawaited(
+                      ref
+                          .read(settingsServiceProvider)
+                          .set(
+                            SettingsService.audioInputDeviceKey,
+                            value ?? '',
+                          ),
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Обновить список микрофонов',
+                  onPressed: () => ref.invalidate(audioInputDevicesProvider),
+                  icon: const Icon(Icons.refresh_rounded),
+                ),
+              ],
+            ),
+            if (devices.isEmpty)
+              const Padding(
+                padding: EdgeInsets.only(top: 6),
+                child: Text('Windows не сообщил ни одного устройства ввода'),
+              ),
+          ],
+        );
+      },
+    );
+  }
+}
+
 /// Секция «Распознавание речи»: активная модель и установка пака из папки.
 class _AsrSettingsSection extends ConsumerStatefulWidget {
   const _AsrSettingsSection();
@@ -1025,6 +1118,23 @@ class _AsrSettingsSectionState extends ConsumerState<_AsrSettingsSection> {
   final _pathController = TextEditingController();
   String? _error;
   bool _busy = false;
+
+  Future<void> _pickDirectory() async {
+    try {
+      final path = await getDirectoryPath(confirmButtonText: 'Выбрать модель');
+      if (path != null && mounted) {
+        setState(() {
+          _pathController.text = path;
+          _error = null;
+        });
+      }
+    } catch (error) {
+      debugPrint('model directory picker failed: ${error.runtimeType}');
+      if (mounted) {
+        setState(() => _error = 'Выбор папки недоступен на этой платформе');
+      }
+    }
+  }
 
   @override
   void dispose() {
@@ -1044,7 +1154,7 @@ class _AsrSettingsSectionState extends ConsumerState<_AsrSettingsSection> {
     });
     try {
       final manager = await ref.read(modelManagerProvider.future);
-      final modelId = await manager.installFromDirectory(path);
+      final modelId = await manager.installWhisperDirectory(path);
       await manager.activate(modelId);
       final queue = await ref.read(transcriptionQueueProvider.future);
       await queue.kick();
@@ -1073,7 +1183,9 @@ class _AsrSettingsSectionState extends ConsumerState<_AsrSettingsSection> {
     final active = ref.watch(activeAsrModelProvider).value;
     final activeLabel = active == null
         ? 'Модель не установлена'
-        : '${active.modelId} · ${active.languages.join(', ')}';
+        : '${active.modelId} · ${active.languages.join(', ')} · '
+              '${(active.sizeBytes / (1024 * 1024)).toStringAsFixed(0)} МБ · '
+              '${active.license}';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1095,12 +1207,25 @@ class _AsrSettingsSectionState extends ConsumerState<_AsrSettingsSection> {
           ],
         ),
         const SizedBox(height: 10),
+        Text(
+          'Скачайте multilingual Whisper ONNX из официального релиза '
+          'sherpa-onnx, распакуйте и выберите папку. Распознавание выполняется '
+          'только локально.',
+          style: TextStyle(fontSize: 11, color: c.muted, height: 1.35),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: _busy ? null : _pickDirectory,
+          icon: const Icon(Icons.folder_open_rounded),
+          label: const Text('Выбрать папку модели'),
+        ),
+        const SizedBox(height: 8),
         TextField(
           controller: _pathController,
           enabled: !_busy,
           style: TextStyle(fontSize: 12, color: c.text),
           decoration: InputDecoration(
-            hintText: 'Путь к папке model pack',
+            hintText: 'Путь к распакованной Whisper ONNX модели',
             hintStyle: TextStyle(fontSize: 12, color: c.muted),
             errorText: _error,
             errorMaxLines: 2,
@@ -1122,7 +1247,7 @@ class _AsrSettingsSectionState extends ConsumerState<_AsrSettingsSection> {
                     height: 14,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : const Text('Установить из папки'),
+                : const Text('Проверить и установить'),
           ),
         ),
       ],

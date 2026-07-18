@@ -2,10 +2,12 @@ import 'dart:async';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_quill/flutter_quill.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 
+import '../application/clipboard_image_reader.dart';
 import '../application/images_service.dart';
 import '../application/notes_service.dart';
 import '../domain/document.dart';
@@ -13,9 +15,12 @@ import '../domain/types.dart';
 import '../infrastructure/audio_player_controller.dart';
 import '../infrastructure/db/database.dart';
 import 'capture_sheet.dart';
+import 'image_paste_intent.dart';
 import 'move_note.dart';
 import 'providers.dart';
 import 'sidebar.dart';
+import 'snackbars.dart';
+import 'tag_management.dart';
 import 'theme.dart';
 
 enum _SaveStatus { saved, saving, error }
@@ -41,16 +46,43 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
   Timer? _debounce;
   String? _noteId;
   Note? _latest;
+  Object _noteToken = Object();
 
   /// documentJson, которому соответствует содержимое редактора: маркер
   /// «есть ли внешнее изменение» и «есть ли что сохранять».
   String? _syncedJson;
   bool _dirty = false;
   bool _saving = false;
+  Completer<void>? _saveCompletion;
   _SaveStatus _status = _SaveStatus.saved;
+
+  /// Riverpod запрещает ref в dispose — держим ссылку на реестр в поле.
+  late final NoteFlushRegistry _flushRegistry;
+
+  @override
+  void initState() {
+    super.initState();
+    // Ctrl+S (FR-NOT-006): глобальный шорткат форсирует durable flush.
+    _flushRegistry = ref.read(noteFlushRegistryProvider);
+    _flushRegistry.register(_flushNow);
+  }
+
+  /// Немедленный durable flush без ожидания debounce; статус обновляет _save.
+  Future<void> _flushNow() async {
+    if (!mounted) return;
+    _debounce?.cancel();
+    // Ctrl+S must not merely schedule another debounce when an autosave is
+    // already in flight. First wait until that transaction is durable, then
+    // persist edits that arrived while it was running.
+    final inFlight = _saveCompletion;
+    if (inFlight != null) await inFlight.future;
+    if (!mounted || !_dirty) return;
+    await _save();
+  }
 
   @override
   void dispose() {
+    _flushRegistry.unregister(_flushNow);
     _debounce?.cancel();
     _docChanges?.cancel();
     // Панель закрыта с несохранёнными правками — дописываем без ожидания,
@@ -122,6 +154,7 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
 
   void _sync(Note? note) {
     if (note == null) {
+      _noteToken = Object();
       _noteId = null;
       _latest = null;
       _docChanges?.cancel();
@@ -132,6 +165,7 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
       return;
     }
     if (note.id != _noteId) {
+      _noteToken = Object();
       _debounce?.cancel();
       _noteId = note.id;
       _latest = note;
@@ -161,8 +195,7 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
 
   Future<void> _save() async {
     if (_saving) {
-      // Сохранение уже идёт — дожидаемся и пробуем снова.
-      _debounce = Timer(const Duration(milliseconds: 300), _save);
+      await _saveCompletion?.future;
       return;
     }
     final note = _latest;
@@ -178,6 +211,8 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
       return;
     }
     _saving = true;
+    final completion = Completer<void>();
+    _saveCompletion = completion;
     // Правки на момент снимка учтены; новые пометят _dirty заново.
     _dirty = false;
     try {
@@ -211,7 +246,7 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
         _status = _SaveStatus.saved;
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
+        PotokSnackBar(
           content: Text(
             'Заметка изменена в другом месте — показана актуальная версия',
           ),
@@ -219,14 +254,23 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
       );
     } catch (e) {
       debugPrint('note save failed: ${e.runtimeType}');
+      // The snapshot is still present in the editor and must remain
+      // retryable (manually with Ctrl+S or by a later edit).
+      _dirty = true;
       if (!mounted) return;
       setState(() {
         _saving = false;
         _status = _SaveStatus.error;
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Не удалось сохранить заметку')),
+        PotokSnackBar(content: const Text('Не удалось сохранить заметку')),
       );
+    } finally {
+      _saving = false;
+      if (identical(_saveCompletion, completion)) {
+        _saveCompletion = null;
+      }
+      if (!completion.isCompleted) completion.complete();
     }
   }
 
@@ -235,6 +279,7 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
   Future<void> _insertImage() async {
     final note = _latest;
     if (note == null) return;
+    final expectedNoteToken = _noteToken;
     final messenger = ScaffoldMessenger.of(context);
     const typeGroup = XTypeGroup(
       label: 'Изображения',
@@ -246,7 +291,7 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
     } catch (e) {
       debugPrint('image pick failed: ${e.runtimeType}');
       messenger.showSnackBar(
-        const SnackBar(content: Text('Не удалось открыть выбор файла')),
+        PotokSnackBar(content: const Text('Не удалось открыть выбор файла')),
       );
       return;
     }
@@ -254,8 +299,81 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
     try {
       final images = await ref.read(imagesServiceProvider.future);
       final asset = await images.attachImage(note, picked.path);
-      final controller = _controller;
-      if (!mounted || controller == null || _noteId != note.id) return;
+      final defaultAlt = p.basenameWithoutExtension(picked.path).trim();
+      _insertManagedImage(
+        asset.id,
+        defaultAlt.isEmpty ? 'Изображение' : defaultAlt,
+        expectedNoteToken: expectedNoteToken,
+      );
+    } on ImageAttachException catch (e) {
+      messenger.showSnackBar(PotokSnackBar(content: Text(e.message)));
+    } catch (e) {
+      debugPrint('image attach failed: ${e.runtimeType}');
+      messenger.showSnackBar(
+        PotokSnackBar(content: const Text('Не удалось добавить изображение')),
+      );
+    }
+  }
+
+  void _insertManagedImage(
+    String assetId,
+    String alt, {
+    required Object expectedNoteToken,
+  }) {
+    final controller = _controller;
+    if (!mounted ||
+        controller == null ||
+        !identical(expectedNoteToken, _noteToken)) {
+      return;
+    }
+    final selection = controller.selection;
+    final index = selection.isValid
+        ? selection.start
+        : controller.document.length - 1;
+    final length = selection.isValid ? selection.end - selection.start : 0;
+    controller.replaceText(
+      index,
+      length,
+      BlockEmbed.image('asset://$assetId'),
+      TextSelection.collapsed(offset: index + 1),
+    );
+    controller.formatText(
+      index,
+      1,
+      Attribute<String>('alt', AttributeScope.embeds, alt),
+    );
+    controller.formatText(
+      index,
+      1,
+      const Attribute<String>('display', AttributeScope.embeds, 'wide'),
+    );
+  }
+
+  Future<void> _pasteFromClipboard() async {
+    final note = _latest;
+    final controller = _controller;
+    if (note == null || controller == null) return;
+    final expectedNoteToken = _noteToken;
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final image = await ref.read(clipboardImageReaderProvider).readImage();
+      if (image != null) {
+        final images = await ref.read(imagesServiceProvider.future);
+        final asset = await images.attachImageBytes(
+          note,
+          image.bytes,
+          extension: image.extension,
+        );
+        _insertManagedImage(
+          asset.id,
+          'Изображение из буфера',
+          expectedNoteToken: expectedNoteToken,
+        );
+        return;
+      }
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      final text = data?.text;
+      if (text == null || text.isEmpty || !mounted) return;
       final selection = controller.selection;
       final index = selection.isValid
           ? selection.start
@@ -264,30 +382,17 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
       controller.replaceText(
         index,
         length,
-        BlockEmbed.image('asset://${asset.id}'),
-        TextSelection.collapsed(offset: index + 1),
+        text,
+        TextSelection.collapsed(offset: index + text.length),
       );
-      final defaultAlt = p.basenameWithoutExtension(picked.path).trim();
-      controller.formatText(
-        index,
-        1,
-        Attribute<String>(
-          'alt',
-          AttributeScope.embeds,
-          defaultAlt.isEmpty ? 'Изображение' : defaultAlt,
-        ),
-      );
-      controller.formatText(
-        index,
-        1,
-        const Attribute<String>('display', AttributeScope.embeds, 'wide'),
-      );
-    } on ImageAttachException catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text(e.message)));
-    } catch (e) {
-      debugPrint('image attach failed: ${e.runtimeType}');
+    } on ImageAttachException catch (error) {
+      messenger.showSnackBar(PotokSnackBar(content: Text(error.message)));
+    } on ClipboardImageReadException catch (error) {
+      messenger.showSnackBar(PotokSnackBar(content: Text(error.message)));
+    } catch (error) {
+      debugPrint('clipboard image attach failed: ${error.runtimeType}');
       messenger.showSnackBar(
-        const SnackBar(content: Text('Не удалось добавить изображение')),
+        PotokSnackBar(content: const Text('Не удалось вставить изображение')),
       );
     }
   }
@@ -302,14 +407,16 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
       await action(service);
     } on StateError {
       messenger.showSnackBar(
-        const SnackBar(
+        PotokSnackBar(
           content: Text('Данные изменились — показана актуальная версия'),
         ),
       );
     } catch (e) {
       debugPrint('note action failed: ${e.runtimeType}');
       messenger.showSnackBar(
-        SnackBar(content: Text(failMessage ?? 'Не удалось выполнить действие')),
+        PotokSnackBar(
+          content: Text(failMessage ?? 'Не удалось выполнить действие'),
+        ),
       );
     }
   }
@@ -403,6 +510,8 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
             child: ListView(
               padding: const EdgeInsets.all(28),
               children: [
+                _NoteTitleEditor(note: note),
+                const SizedBox(height: 18),
                 _ProjectRow(note: note),
                 const SizedBox(height: 14),
                 _TagsRow(note: note),
@@ -451,11 +560,24 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
                   controller: controller,
                   focusNode: _editorFocus,
                   scrollController: _editorScroll,
-                  config: const QuillEditorConfig(
+                  config: QuillEditorConfig(
                     scrollable: false,
                     placeholder: 'Текст заметки…',
-                    padding: EdgeInsets.symmetric(vertical: 8),
-                    embedBuilders: [_ManagedImageEmbedBuilder()],
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    embedBuilders: const [_ManagedImageEmbedBuilder()],
+                    customShortcuts: const {
+                      SingleActivator(LogicalKeyboardKey.keyV, control: true):
+                          PasteWithImagesIntent(),
+                    },
+                    customActions: {
+                      PasteWithImagesIntent:
+                          CallbackAction<PasteWithImagesIntent>(
+                            onInvoke: (_) {
+                              unawaited(_pasteFromClipboard());
+                              return null;
+                            },
+                          ),
+                    },
                   ),
                 ),
                 const SizedBox(height: 26),
@@ -467,6 +589,102 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _NoteTitleEditor extends ConsumerStatefulWidget {
+  final Note note;
+
+  const _NoteTitleEditor({required this.note});
+
+  @override
+  ConsumerState<_NoteTitleEditor> createState() => _NoteTitleEditorState();
+}
+
+class _NoteTitleEditorState extends ConsumerState<_NoteTitleEditor> {
+  late final TextEditingController _controller;
+  late final FocusNode _focus;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.note.title ?? '');
+    _focus = FocusNode(debugLabel: 'note-title')
+      ..addListener(() {
+        if (!_focus.hasFocus) unawaited(_save());
+      });
+  }
+
+  @override
+  void didUpdateWidget(covariant _NoteTitleEditor oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!_focus.hasFocus &&
+        (oldWidget.note.id != widget.note.id ||
+            oldWidget.note.title != widget.note.title)) {
+      _controller.text = widget.note.title ?? '';
+    }
+  }
+
+  Future<void> _save() async {
+    if (_saving) return;
+    final value = _controller.text.trim();
+    if (value == (widget.note.title ?? '').trim()) return;
+    _saving = true;
+    try {
+      await ref.read(noteFlushRegistryProvider).flushNow();
+      final fresh = ref.read(selectedNoteProvider);
+      if (fresh == null || fresh.id != widget.note.id) return;
+      final service = await ref.read(notesServiceProvider.future);
+      await service.updateTitle(fresh, value);
+    } on StateError {
+      final fresh = ref.read(selectedNoteProvider);
+      if (fresh?.id == widget.note.id) {
+        _controller.text = fresh?.title ?? '';
+      }
+    } catch (error) {
+      debugPrint('title save failed: ${error.runtimeType}');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          PotokSnackBar(content: const Text('Не удалось сохранить название')),
+        );
+      }
+    } finally {
+      _saving = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    _focus.dispose();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = PotokColors.of(context);
+    return TextField(
+      key: const ValueKey('note-title-editor'),
+      controller: _controller,
+      focusNode: _focus,
+      maxLength: 120,
+      maxLines: 2,
+      textInputAction: TextInputAction.done,
+      onSubmitted: (_) => _save(),
+      style: TextStyle(
+        color: c.text,
+        fontSize: 22,
+        fontWeight: FontWeight.w700,
+      ),
+      decoration: InputDecoration(
+        hintText: 'Название создастся из содержания',
+        counterText: '',
+        border: InputBorder.none,
+        contentPadding: EdgeInsets.zero,
+        hintStyle: TextStyle(color: c.muted, fontWeight: FontWeight.w500),
       ),
     );
   }
@@ -794,6 +1012,7 @@ class _ProjectRow extends ConsumerWidget {
 }
 
 class _TagsRow extends ConsumerWidget {
+  static const _createTagValue = '__create_tag__';
   final Note note;
 
   const _TagsRow({required this.note});
@@ -809,12 +1028,25 @@ class _TagsRow extends ConsumerWidget {
       await action();
     } on StateError {
       messenger.showSnackBar(
-        const SnackBar(content: Text('Тег недоступен для этой заметки')),
+        PotokSnackBar(content: const Text('Тег недоступен для этой заметки')),
       );
     } catch (e) {
       debugPrint('tag action failed: ${e.runtimeType}');
-      messenger.showSnackBar(SnackBar(content: Text(failMessage)));
+      messenger.showSnackBar(PotokSnackBar(content: Text(failMessage)));
     }
+  }
+
+  Future<void> _createAndAssign(BuildContext context, WidgetRef ref) async {
+    final tagId = await showTagEditorDialog(
+      context,
+      ref,
+      initialProjectId: note.projectId,
+    );
+    if (tagId == null || !context.mounted) return;
+    await _runTagAction(context, ref, () async {
+      final service = await ref.read(tagsServiceProvider.future);
+      await service.assignTag(note.id, tagId);
+    }, 'Тег создан, но его не удалось добавить к заметке');
   }
 
   @override
@@ -866,38 +1098,56 @@ class _TagsRow extends ConsumerWidget {
               ),
             ),
           ),
-        if (addable.isNotEmpty)
-          PopupMenuButton<String>(
-            tooltip: 'Добавить тег',
-            onSelected: (tagId) => _runTagAction(context, ref, () async {
-              final service = await ref.read(tagsServiceProvider.future);
-              await service.assignTag(note.id, tagId);
-            }, 'Не удалось добавить тег'),
-            itemBuilder: (context) => [
-              for (final tag in addable)
-                PopupMenuItem(
-                  value: tag.id,
-                  child: Row(
-                    children: [
-                      Icon(Icons.circle, size: 10, color: Color(tag.colorArgb)),
-                      const SizedBox(width: 8),
-                      Flexible(child: Text(tag.name)),
-                    ],
-                  ),
+        PopupMenuButton<String>(
+          tooltip: 'Добавить тег',
+          onSelected: (tagId) {
+            if (tagId == _createTagValue) {
+              unawaited(_createAndAssign(context, ref));
+              return;
+            }
+            unawaited(
+              _runTagAction(context, ref, () async {
+                final service = await ref.read(tagsServiceProvider.future);
+                await service.assignTag(note.id, tagId);
+              }, 'Не удалось добавить тег'),
+            );
+          },
+          itemBuilder: (context) => [
+            for (final tag in addable)
+              PopupMenuItem(
+                value: tag.id,
+                child: Row(
+                  children: [
+                    Icon(Icons.circle, size: 10, color: Color(tag.colorArgb)),
+                    const SizedBox(width: 8),
+                    Flexible(child: Text(tag.name)),
+                  ],
                 ),
-            ],
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                border: Border.all(color: c.line),
-                borderRadius: BorderRadius.circular(999),
               ),
-              child: Text(
-                '+ тег',
-                style: TextStyle(fontSize: 11, color: c.muted),
+            if (addable.isNotEmpty) const PopupMenuDivider(),
+            const PopupMenuItem(
+              value: _createTagValue,
+              child: Row(
+                children: [
+                  Icon(Icons.add_rounded, size: 18),
+                  SizedBox(width: 8),
+                  Text('Создать тег…'),
+                ],
               ),
             ),
+          ],
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              border: Border.all(color: c.line),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              '+ тег',
+              style: TextStyle(fontSize: 11, color: c.muted),
+            ),
           ),
+        ),
       ],
     );
   }
@@ -927,7 +1177,7 @@ class _AudioSection extends ConsumerWidget {
     } catch (e) {
       debugPrint('enqueue transcription failed: ${e.runtimeType}');
       messenger.showSnackBar(
-        const SnackBar(
+        PotokSnackBar(
           content: Text('Не удалось поставить расшифровку в очередь'),
         ),
       );
@@ -946,7 +1196,7 @@ class _AudioSection extends ConsumerWidget {
     } catch (e) {
       debugPrint('retry transcription failed: ${e.runtimeType}');
       messenger.showSnackBar(
-        const SnackBar(content: Text('Не удалось повторить расшифровку')),
+        PotokSnackBar(content: const Text('Не удалось повторить расшифровку')),
       );
     }
   }
@@ -962,14 +1212,12 @@ class _AudioSection extends ConsumerWidget {
       await service.acceptTranscript(note.id, revisionId);
     } on StateError {
       messenger.showSnackBar(
-        const SnackBar(
-          content: Text('Заметка изменилась — повторите принятие'),
-        ),
+        PotokSnackBar(content: Text('Заметка изменилась — повторите принятие')),
       );
     } catch (e) {
       debugPrint('accept transcript failed: ${e.runtimeType}');
       messenger.showSnackBar(
-        const SnackBar(content: Text('Не удалось принять расшифровку')),
+        PotokSnackBar(content: const Text('Не удалось принять расшифровку')),
       );
     }
   }
@@ -1006,7 +1254,7 @@ class _AudioSection extends ConsumerWidget {
     } catch (error) {
       debugPrint('audio trash failed: ${error.runtimeType}');
       messenger.showSnackBar(
-        const SnackBar(content: Text('Не удалось удалить аудио')),
+        PotokSnackBar(content: const Text('Не удалось удалить аудио')),
       );
     }
   }
@@ -1041,10 +1289,7 @@ class _AudioSection extends ConsumerWidget {
               ),
               TextButton.icon(
                 key: const ValueKey('add-audio-attachment'),
-                onPressed: () => showCaptureSheet(
-                  context,
-                  attachToNote: note,
-                ),
+                onPressed: () => showCaptureSheet(context, attachToNote: note),
                 icon: const Icon(Icons.mic_none_rounded, size: 18),
                 label: const Text('Добавить'),
               ),
@@ -1084,12 +1329,14 @@ class _AudioSection extends ConsumerWidget {
                 ),
                 if (asset.lifecycleState == AssetLifecycle.ready)
                   TextButton(
-                    onPressed: revisions.any(
-                      (revision) =>
-                          revision.audioAssetId == asset.id &&
-                          (revision.state == TranscriptState.queued ||
-                              revision.state == TranscriptState.recognizing),
-                    )
+                    onPressed:
+                        revisions.any(
+                          (revision) =>
+                              revision.audioAssetId == asset.id &&
+                              (revision.state == TranscriptState.queued ||
+                                  revision.state ==
+                                      TranscriptState.recognizing),
+                        )
                         ? null
                         : () => _enqueue(context, ref, asset.id),
                     child: const Text('Расшифровать'),

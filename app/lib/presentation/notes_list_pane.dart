@@ -11,6 +11,7 @@ import '../domain/types.dart';
 import '../infrastructure/db/database.dart';
 import 'move_note.dart';
 import 'providers.dart';
+import 'snackbars.dart';
 import 'theme.dart';
 
 const _ruMonths = [
@@ -95,18 +96,20 @@ class _NotesListPaneState extends ConsumerState<NotesListPane> {
       await action(service, notes);
       ref.read(bulkSelectedNoteIdsProvider.notifier).clear();
       messenger.showSnackBar(
-        SnackBar(content: Text('Изменено заметок: ${notes.length}')),
+        PotokSnackBar(content: Text('Изменено заметок: ${notes.length}')),
       );
     } on StateError {
       messenger.showSnackBar(
-        const SnackBar(
+        PotokSnackBar(
           content: Text('Часть заметок изменилась — операция отменена целиком'),
         ),
       );
     } catch (error) {
       debugPrint('bulk note action failed: ${error.runtimeType}');
       messenger.showSnackBar(
-        const SnackBar(content: Text('Не удалось выполнить массовую операцию')),
+        PotokSnackBar(
+          content: const Text('Не удалось выполнить массовую операцию'),
+        ),
       );
     }
   }
@@ -192,11 +195,11 @@ class _NotesListPaneState extends ConsumerState<NotesListPane> {
       await tagsService.bulkAssignTag(notes, tagId);
       ref.read(bulkSelectedNoteIdsProvider.notifier).clear();
       messenger.showSnackBar(
-        SnackBar(content: Text('Тег добавлен заметкам: ${notes.length}')),
+        PotokSnackBar(content: Text('Тег добавлен заметкам: ${notes.length}')),
       );
     } on StateError {
       messenger.showSnackBar(
-        const SnackBar(
+        PotokSnackBar(
           content: Text(
             'Заметки или тег изменились — операция отменена целиком',
           ),
@@ -205,7 +208,7 @@ class _NotesListPaneState extends ConsumerState<NotesListPane> {
     } catch (error) {
       debugPrint('bulk tag failed: ${error.runtimeType}');
       messenger.showSnackBar(
-        const SnackBar(content: Text('Не удалось назначить тег')),
+        PotokSnackBar(content: const Text('Не удалось назначить тег')),
       );
     }
   }
@@ -286,45 +289,7 @@ class _NotesListPaneState extends ConsumerState<NotesListPane> {
                         ),
                       ),
                     ),
-                    if (selectedIds.isNotEmpty && !isTrash) ...[
-                      IconButton(
-                        key: const ValueKey('bulk-status-done'),
-                        tooltip: 'Отметить выполненными',
-                        onPressed: () => _runBulk(
-                          (service, notes) =>
-                              service.bulkSetStatus(notes, NoteStatus.done),
-                        ),
-                        icon: const Icon(Icons.done_all_rounded),
-                      ),
-                      IconButton(
-                        key: const ValueKey('bulk-move'),
-                        tooltip: 'Перенести в проект',
-                        onPressed: () => _bulkMove(projects),
-                        icon: const Icon(Icons.drive_file_move_outline),
-                      ),
-                      IconButton(
-                        key: const ValueKey('bulk-tag'),
-                        tooltip: 'Добавить глобальный тег',
-                        onPressed: globalTags.isEmpty
-                            ? null
-                            : () => _bulkAssignTag(globalTags),
-                        icon: const Icon(Icons.label_outline_rounded),
-                      ),
-                      IconButton(
-                        key: const ValueKey('bulk-trash'),
-                        tooltip: 'В корзину',
-                        onPressed: _bulkTrash,
-                        icon: const Icon(Icons.delete_outline_rounded),
-                      ),
-                      IconButton(
-                        key: const ValueKey('bulk-clear'),
-                        tooltip: 'Отменить выбор',
-                        onPressed: () => ref
-                            .read(bulkSelectedNoteIdsProvider.notifier)
-                            .clear(),
-                        icon: const Icon(Icons.close_rounded),
-                      ),
-                    ] else if (!isTrash)
+                    if (selectedIds.isEmpty && !isTrash)
                       IconButton(
                         key: const ValueKey('note-list-settings'),
                         tooltip: 'Фильтры и сортировка',
@@ -345,15 +310,76 @@ class _NotesListPaneState extends ConsumerState<NotesListPane> {
                       ),
                   ],
                 ),
-                if (!isTrash && selectedIds.isEmpty) ...[
+                if (!isTrash) ...[
                   const SizedBox(height: 14),
-                  _SearchField(
-                    controller: _searchController,
-                    onChanged: _onSearchChanged,
-                    onClear: _clearSearch,
+                  SizedBox(
+                    height: 132,
+                    child: selectedIds.isEmpty
+                        ? Column(
+                            children: [
+                              _SearchField(
+                                controller: _searchController,
+                                onChanged: _onSearchChanged,
+                                onClear: _clearSearch,
+                              ),
+                              const SizedBox(height: 11),
+                              const _FilterChipsRow(),
+                            ],
+                          )
+                        : Align(
+                            alignment: Alignment.topCenter,
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                              children: [
+                                IconButton(
+                                  key: const ValueKey('bulk-status-done'),
+                                  tooltip: 'Отметить выполненными',
+                                  onPressed: () => _runBulk(
+                                    (service, notes) => service.bulkSetStatus(
+                                      notes,
+                                      NoteStatus.done,
+                                    ),
+                                  ),
+                                  icon: const Icon(Icons.done_all_rounded),
+                                ),
+                                IconButton(
+                                  key: const ValueKey('bulk-move'),
+                                  tooltip: 'Перенести в проект',
+                                  onPressed: () => _bulkMove(projects),
+                                  icon: const Icon(
+                                    Icons.drive_file_move_outline,
+                                  ),
+                                ),
+                                IconButton(
+                                  key: const ValueKey('bulk-tag'),
+                                  tooltip: 'Добавить глобальный тег',
+                                  onPressed: globalTags.isEmpty
+                                      ? null
+                                      : () => _bulkAssignTag(globalTags),
+                                  icon: const Icon(Icons.label_outline_rounded),
+                                ),
+                                IconButton(
+                                  key: const ValueKey('bulk-trash'),
+                                  tooltip: 'В корзину',
+                                  onPressed: _bulkTrash,
+                                  icon: const Icon(
+                                    Icons.delete_outline_rounded,
+                                  ),
+                                ),
+                                IconButton(
+                                  key: const ValueKey('bulk-clear'),
+                                  tooltip: 'Отменить выбор',
+                                  onPressed: () => ref
+                                      .read(
+                                        bulkSelectedNoteIdsProvider.notifier,
+                                      )
+                                      .clear(),
+                                  icon: const Icon(Icons.close_rounded),
+                                ),
+                              ],
+                            ),
+                          ),
                   ),
-                  const SizedBox(height: 11),
-                  const _FilterChipsRow(),
                 ],
               ],
             ),
@@ -435,59 +461,68 @@ class _FilterChipsRow extends ConsumerWidget {
     final c = PotokColors.of(context);
     final active = ref.watch(activeQuickFilterProvider);
     final settings = ref.watch(noteListViewSettingsProvider);
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Row(
-        children: [
-          for (final filter in NoteChipFilter.values)
-            Padding(
-              padding: const EdgeInsets.only(right: 7),
-              child: InkWell(
-                borderRadius: BorderRadius.circular(999),
-                onTap: () => ref
-                    .read(noteListViewSettingsProvider.notifier)
-                    .selectQuick(filter),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 6,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          height: 32,
+          child: settings.filter.isActive
+              ? ActionChip(
+                  key: const ValueKey('clear-note-filters'),
+                  avatar: const Icon(Icons.close_rounded, size: 15),
+                  label: Text(
+                    'Сбросить (${settings.filter.activeDimensionCount})',
                   ),
-                  decoration: BoxDecoration(
-                    color: filter == active ? c.accentSoft : c.surface,
-                    border: Border.all(
-                      color: filter == active ? c.accent : c.line,
-                    ),
+                  onPressed: () => ref
+                      .read(noteListViewSettingsProvider.notifier)
+                      .clearFilters(),
+                )
+              : const SizedBox.shrink(),
+        ),
+        const SizedBox(height: 5),
+        SingleChildScrollView(
+          key: const ValueKey('note-filter-scroll'),
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              for (final filter in NoteChipFilter.values)
+                Padding(
+                  padding: const EdgeInsets.only(right: 7),
+                  child: InkWell(
                     borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Text(
-                    filter.label,
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: filter == active ? c.accent : c.muted,
-                      fontWeight: filter == active
-                          ? FontWeight.w700
-                          : FontWeight.w400,
+                    onTap: () => ref
+                        .read(noteListViewSettingsProvider.notifier)
+                        .selectQuick(filter),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: filter == active ? c.accentSoft : c.surface,
+                        border: Border.all(
+                          color: filter == active ? c.accent : c.line,
+                        ),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        filter.label,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: filter == active ? c.accent : c.muted,
+                          fontWeight: filter == active
+                              ? FontWeight.w700
+                              : FontWeight.w400,
+                        ),
+                      ),
                     ),
                   ),
                 ),
-              ),
-            ),
-          if (settings.filter.isActive)
-            Padding(
-              padding: const EdgeInsets.only(right: 7),
-              child: ActionChip(
-                key: const ValueKey('clear-note-filters'),
-                avatar: const Icon(Icons.close_rounded, size: 15),
-                label: Text(
-                  'Сбросить (${settings.filter.activeDimensionCount})',
-                ),
-                onPressed: () => ref
-                    .read(noteListViewSettingsProvider.notifier)
-                    .clearFilters(),
-              ),
-            ),
-        ],
-      ),
+              const SizedBox(width: 8),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
@@ -651,7 +686,11 @@ class _NoteCard extends ConsumerWidget {
         .split('\n')
         .where((l) => l.trim().isNotEmpty)
         .toList(growable: false);
-    final title = lines.isEmpty ? 'Аудиозаметка' : lines.first;
+    final title = note.title?.trim().isNotEmpty == true
+        ? note.title!.trim()
+        : lines.isEmpty
+        ? 'Аудиозаметка'
+        : lines.first;
     final preview = lines.length > 1 ? lines.skip(1).join(' ') : '';
     final order = ref.watch(noteListViewSettingsProvider).order;
     final displayedAt = switch (order.field) {
@@ -665,7 +704,7 @@ class _NoteCard extends ConsumerWidget {
       displayedAt,
     ).toLocal();
 
-    Widget card = Material(
+    final Widget card = Material(
       color: selected || bulkSelected ? c.accentSoft : Colors.transparent,
       borderRadius: BorderRadius.circular(c.radiusSmall),
       child: InkWell(
@@ -694,76 +733,43 @@ class _NoteCard extends ConsumerWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      SizedBox(
-                        width: 30,
-                        height: 28,
-                        child: Checkbox(
-                          key: ValueKey('bulk-select-${note.id}'),
-                          value: bulkSelected,
-                          onChanged: (_) => onToggleSelection(),
-                          visualDensity: VisualDensity.compact,
+                      Expanded(
+                        child: Text(
+                          title,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            height: 1.3,
+                            color: c.text,
+                            decoration: done
+                                ? TextDecoration.lineThrough
+                                : null,
+                          ),
                         ),
                       ),
-                      const SizedBox(width: 4),
-                      if (tags.isNotEmpty) ...[
-                        Flexible(
-                          child: Text(
-                            tags.first.name,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 10,
-                              fontWeight: FontWeight.w800,
-                              color: Color(tags.first.colorArgb),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 7),
-                      ],
-                      if (note.sourceKind == SourceKind.audio) ...[
-                        Icon(Icons.mic_rounded, size: 11, color: c.muted),
-                        const SizedBox(width: 4),
-                      ],
-                      if (project != null)
-                        Flexible(
-                          child: Text(
-                            project.name,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(fontSize: 10, color: c.muted),
-                          ),
-                        ),
-                      const Spacer(),
+                      const SizedBox(width: 8),
                       Text(
                         timeLabel(displayedTime),
                         style: TextStyle(fontSize: 10, color: c.muted),
                       ),
-                      const SizedBox(width: 2),
-                      SizedBox.square(
-                        dimension: 32,
-                        child: IconButton(
-                          key: ValueKey('move-note-${note.id}'),
-                          tooltip: 'Перенести заметку',
-                          padding: EdgeInsets.zero,
-                          iconSize: 16,
-                          color: c.muted,
-                          onPressed: onMove,
-                          icon: const Icon(Icons.drive_file_move_outline),
+                      const SizedBox(width: 4),
+                      Opacity(
+                        opacity: bulkSelected ? 1 : 0.55,
+                        child: SizedBox.square(
+                          dimension: 28,
+                          child: Checkbox(
+                            key: ValueKey('bulk-select-${note.id}'),
+                            value: bulkSelected,
+                            onChanged: (_) => onToggleSelection(),
+                            visualDensity: VisualDensity.compact,
+                          ),
                         ),
                       ),
                     ],
-                  ),
-                  const SizedBox(height: 7),
-                  Text(
-                    title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      height: 1.25,
-                      color: c.text,
-                      decoration: done ? TextDecoration.lineThrough : null,
-                    ),
                   ),
                   if (preview.isNotEmpty) ...[
                     const SizedBox(height: 5),
@@ -778,13 +784,13 @@ class _NoteCard extends ConsumerWidget {
                       ),
                     ),
                   ],
-                  if (tags.length > 1) ...[
+                  if (tags.isNotEmpty) ...[
                     const SizedBox(height: 9),
                     Wrap(
                       spacing: 5,
                       runSpacing: 4,
                       children: [
-                        for (final tag in tags.skip(1).take(3))
+                        for (final tag in tags.take(4))
                           Container(
                             padding: const EdgeInsets.symmetric(
                               horizontal: 6,
@@ -802,6 +808,73 @@ class _NoteCard extends ConsumerWidget {
                       ],
                     ),
                   ],
+                  const SizedBox(height: 9),
+                  Row(
+                    children: [
+                      if (note.sourceKind == SourceKind.audio) ...[
+                        Icon(Icons.mic_rounded, size: 13, color: c.muted),
+                        const SizedBox(width: 5),
+                      ],
+                      Expanded(
+                        child: Text(
+                          project?.name ?? 'Без проекта',
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 10, color: c.muted),
+                        ),
+                      ),
+                      IconButton(
+                        key: ValueKey('favorite-note-${note.id}'),
+                        tooltip: note.isFavorite
+                            ? 'Убрать из избранного'
+                            : 'Добавить в избранное',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () => _toggleFavorite(context, ref),
+                        icon: Icon(
+                          note.isFavorite
+                              ? Icons.star_rounded
+                              : Icons.star_border_rounded,
+                          size: 19,
+                          color: note.isFavorite ? c.decision : c.muted,
+                        ),
+                      ),
+                      IconButton(
+                        key: ValueKey('done-note-${note.id}'),
+                        tooltip: done
+                            ? 'Вернуть в работу'
+                            : 'Отметить выполненной',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () => _toggleDone(context, ref),
+                        icon: Icon(
+                          done
+                              ? Icons.check_circle_rounded
+                              : Icons.check_circle_outline_rounded,
+                          size: 19,
+                          color: done ? c.decision : c.muted,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      OutlinedButton.icon(
+                        key: ValueKey('move-note-${note.id}'),
+                        onPressed: onMove,
+                        icon: const Icon(
+                          Icons.drive_file_move_outline,
+                          size: 15,
+                        ),
+                        label: const Text('В проект'),
+                        style: OutlinedButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 7,
+                          ),
+                          textStyle: const TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -810,15 +883,12 @@ class _NoteCard extends ConsumerWidget {
       ),
     );
 
-    if (done) {
-      card = Opacity(opacity: 0.58, child: card);
-    }
     final paddedCard = Padding(
       padding: const EdgeInsets.only(bottom: 5),
       child: card,
     );
     if (!enableDrag) return paddedCard;
-    return LongPressDraggable<Note>(
+    return Draggable<Note>(
       data: note,
       dragAnchorStrategy: pointerDragAnchorStrategy,
       feedback: Material(
@@ -830,6 +900,34 @@ class _NoteCard extends ConsumerWidget {
       childWhenDragging: Opacity(opacity: 0.35, child: paddedCard),
       child: paddedCard,
     );
+  }
+
+  Future<void> _toggleFavorite(BuildContext context, WidgetRef ref) async {
+    try {
+      final service = await ref.read(notesServiceProvider.future);
+      await service.setFavorite(note, !note.isFavorite);
+    } catch (error) {
+      debugPrint('card favorite toggle failed: ${error.runtimeType}');
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          PotokSnackBar(content: const Text('Не удалось изменить избранное')),
+        );
+      }
+    }
+  }
+
+  Future<void> _toggleDone(BuildContext context, WidgetRef ref) async {
+    try {
+      final service = await ref.read(notesServiceProvider.future);
+      await service.toggleDone(note);
+    } catch (error) {
+      debugPrint('card status toggle failed: ${error.runtimeType}');
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          PotokSnackBar(content: const Text('Не удалось изменить статус')),
+        );
+      }
+    }
   }
 }
 
@@ -1183,7 +1281,7 @@ Future<void> showNoteListSettingsSheet(
                               );
                               if (context.mounted) {
                                 ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
+                                  PotokSnackBar(
                                     content: Text(
                                       'Не удалось сохранить представление',
                                     ),
@@ -1374,14 +1472,14 @@ class _TrashList extends ConsumerWidget {
                       await service.restoreFromTrash(note);
                     } on StateError {
                       messenger.showSnackBar(
-                        const SnackBar(
+                        PotokSnackBar(
                           content: Text('Заметка изменилась — список обновлён'),
                         ),
                       );
                     } catch (e) {
                       debugPrint('restore failed: ${e.runtimeType}');
                       messenger.showSnackBar(
-                        const SnackBar(
+                        PotokSnackBar(
                           content: Text('Не удалось восстановить заметку'),
                         ),
                       );

@@ -112,9 +112,7 @@ class ExportService {
           note.documentPlainText,
         ],
     ];
-    final csv = rows
-        .map((row) => row.map(_csvCell).join(','))
-        .join('\r\n');
+    final csv = rows.map((row) => row.map(_csvCell).join(',')).join('\r\n');
     return utf8.encode('﻿$csv\r\n');
   }
 
@@ -183,16 +181,17 @@ class ExportService {
             .putIfAbsent(link.noteId, () => [])
             .add(row.readTable(db.tags));
       }
-      final audioRows = await (db.select(db.mediaAssets).join([
-        innerJoin(
-          db.audioRecordings,
-          db.audioRecordings.assetId.equalsExp(db.mediaAssets.id),
-        ),
-      ])..where(
-            db.mediaAssets.ownerNoteId.isIn(chunk) &
-                db.mediaAssets.deletedAtUtc.isNull(),
-          ))
-          .get();
+      final audioRows =
+          await (db.select(db.mediaAssets).join([
+                innerJoin(
+                  db.audioRecordings,
+                  db.audioRecordings.assetId.equalsExp(db.mediaAssets.id),
+                ),
+              ])..where(
+                db.mediaAssets.ownerNoteId.isIn(chunk) &
+                    db.mediaAssets.deletedAtUtc.isNull(),
+              ))
+              .get();
       for (final row in audioRows) {
         final asset = row.readTable(db.mediaAssets);
         audioByNote

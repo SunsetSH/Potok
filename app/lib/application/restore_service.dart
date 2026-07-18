@@ -175,9 +175,7 @@ class RestoreService {
       final manifest = _decodeManifest(manifestJson);
       _verifyManifest(manifest.files, extractedHashes);
 
-      final dbFile = File(
-        p.join(quarantine.path, BackupFormat.databaseName),
-      );
+      final dbFile = File(p.join(quarantine.path, BackupFormat.databaseName));
       checkCancelled();
       final dbCounts = _verifyDatabase(dbFile, manifest.schemaVersion);
 
@@ -257,7 +255,9 @@ class RestoreService {
         }
       }
       await _deleteQuietly(safety);
-      throw const RestoreException('не удалось заменить данные, выполнен откат');
+      throw const RestoreException(
+        'не удалось заменить данные, выполнен откат',
+      );
     }
 
     await _deleteQuietly(candidate.quarantineDir);
@@ -377,8 +377,7 @@ class RestoreService {
     }
     try {
       final quick = database.select('PRAGMA quick_check');
-      final quickOk =
-          quick.length == 1 && quick.first.values.first == 'ok';
+      final quickOk = quick.length == 1 && quick.first.values.first == 'ok';
       if (!quickOk) {
         throw const RestoreException('база данных в копии повреждена');
       }
@@ -388,8 +387,11 @@ class RestoreService {
           'база данных в копии нарушает целостность связей',
         );
       }
-      final userVersion =
-          database.select('PRAGMA user_version').first.values.first;
+      final userVersion = database
+          .select('PRAGMA user_version')
+          .first
+          .values
+          .first;
       if (userVersion != currentSchemaVersion) {
         throw const RestoreException('копия сделана другой версией приложения');
       }

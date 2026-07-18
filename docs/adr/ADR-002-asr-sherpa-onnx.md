@@ -1,6 +1,6 @@
 # ADR-002: Локальный ASR — sherpa-onnx через adapter contract
 
-Статус: принят (2026-07-16)
+Статус: принят, дополнен WP-09 (2026-07-18)
 
 ## Решение
 - Движок по умолчанию: `sherpa-onnx` (плагин `sherpa_onnx`), offline-recognizer по записанному файлу.
@@ -21,3 +21,17 @@
 
 ## Конвейер
 Recorder → сжатый исходник → декод в mono PCM 16 kHz → VAD/чанки → ASR → revision + timestamps → явное принятие в документ.
+
+## Дополнение WP-09: рабочий PCM-вход до появления native decoder
+
+- `sherpa-onnx` остаётся единственным ASR runtime; второй движок не добавляется.
+- Новая запись при активной модели создаётся как WAV PCM16 mono 16 kHz и
+  передаётся recognizer без промежуточного декодирования.
+- Без активной модели сохраняется AAC/M4A. Для ASR старых M4A требуется будущий
+  platform `AudioDecodePort` на Media Foundation / MediaCodec.
+- Официальную Whisper ONNX directory разрешено импортировать без заранее
+  созданного `potok-model.json`: installer выбирает int8 encoder/decoder и
+  tokens, staging-копия хешируется, внутренний manifest фиксирует SHA-256 и
+  лицензию. Сеть в runtime не добавляется.
+- Это осознанный временный storage trade-off (~110 MiB/ч для WAV); исходное
+  аудио по-прежнему сохраняется до явного удаления.

@@ -27,31 +27,9 @@ class Projects extends Table {
   Set<Column> get primaryKey => {id};
 }
 
-class Sessions extends Table {
-  TextColumn get id => text()();
-  TextColumn get projectId => text().references(Projects, #id)();
-  TextColumn get title => text().withLength(min: 1, max: 200)();
-  TextColumn get state =>
-      textEnum<SessionState>().withDefault(const Constant('active'))();
-  IntColumn get startedAtUtc => integer()();
-  IntColumn get endedAtUtc => integer().nullable()();
-  IntColumn get createdAtUtc => integer()();
-  IntColumn get updatedAtUtc => integer()();
-  IntColumn get deletedAtUtc => integer().nullable()();
-  IntColumn get revision => integer().withDefault(const Constant(1))();
-
-  @override
-  Set<Column> get primaryKey => {id};
-}
-
 class Notes extends Table {
   TextColumn get id => text()();
   TextColumn get projectId => text().nullable().references(Projects, #id)();
-  TextColumn get sessionId => text().nullable().references(
-    Sessions,
-    #id,
-    onDelete: KeyAction.setNull,
-  )();
   TextColumn get title => text().nullable()();
   TextColumn get status => text()
       .map(const NoteStatusConverter())
@@ -237,7 +215,6 @@ class NoteStatusConverter extends TypeConverter<NoteStatus, String> {
 @DriftDatabase(
   tables: [
     Projects,
-    Sessions,
     Notes,
     Tags,
     NoteTags,
@@ -268,28 +245,75 @@ class AppDatabase extends _$AppDatabase {
   );
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
     onUpgrade: (m, from, to) async {
       if (from < 2) {
-        await m.createTable(sessions);
-        await m.addColumn(notes, notes.sessionId);
         await m.createTable(smartViews);
-        await m.createIndex(idxNotesSession);
         await m.createIndex(idxNotesLiveCreated);
         await m.createIndex(idxNotesLiveUpdated);
         await m.createIndex(idxNotesLiveEvent);
         await m.createIndex(idxNotesLiveTitle);
         await m.createIndex(idxNotesTrashDeleted);
-        await m.createIndex(idxSessionsSingleOpen);
         // v1 used an FTS column alias that did not match the external-content
         // Notes column. Rebuild it additively so existing notes stay searchable.
         await customStatement('DROP TRIGGER IF EXISTS notes_fts_insert');
         await customStatement('DROP TRIGGER IF EXISTS notes_fts_delete');
         await customStatement('DROP TRIGGER IF EXISTS notes_fts_update');
         await customStatement('DROP TABLE IF EXISTS notes_fts');
+        await customStatement('''
+CREATE VIRTUAL TABLE notes_fts USING fts5(
+  title,
+  document_plain_text,
+  content='notes',
+  content_rowid='rowid',
+  tokenize='unicode61 remove_diacritics 2'
+)
+''');
+        await customStatement('''
+CREATE TRIGGER notes_fts_insert AFTER INSERT ON notes BEGIN
+  INSERT INTO notes_fts (rowid, title, document_plain_text)
+  VALUES (new.rowid, coalesce(new.title, ''), new.document_plain_text);
+END
+''');
+        await customStatement('''
+CREATE TRIGGER notes_fts_delete AFTER DELETE ON notes BEGIN
+  INSERT INTO notes_fts (
+    notes_fts, rowid, title, document_plain_text
+  ) VALUES (
+    'delete', old.rowid, coalesce(old.title, ''), old.document_plain_text
+  );
+END
+''');
+        await customStatement('''
+CREATE TRIGGER notes_fts_update AFTER UPDATE ON notes BEGIN
+  INSERT INTO notes_fts (
+    notes_fts, rowid, title, document_plain_text
+  ) VALUES (
+    'delete', old.rowid, coalesce(old.title, ''), old.document_plain_text
+  );
+  INSERT INTO notes_fts (rowid, title, document_plain_text)
+  VALUES (new.rowid, coalesce(new.title, ''), new.document_plain_text);
+END
+''');
+        await customStatement(
+          "INSERT INTO notes_fts(notes_fts) VALUES('rebuild')",
+        );
+      }
+      if (from == 2) {
+        // ADR-010: remove the product Session entity while preserving every
+        // note and media row. FTS is external-content and must be detached
+        // while Drift recreates Notes without session_id.
+        await customStatement('DROP TRIGGER IF EXISTS notes_fts_insert');
+        await customStatement('DROP TRIGGER IF EXISTS notes_fts_delete');
+        await customStatement('DROP TRIGGER IF EXISTS notes_fts_update');
+        await customStatement('DROP TABLE IF EXISTS notes_fts');
+        await customStatement('DROP INDEX IF EXISTS idx_notes_session');
+        await customStatement('DROP INDEX IF EXISTS idx_sessions_single_open');
+        await m.alterTable(TableMigration(notes));
+        await customStatement('DROP TABLE IF EXISTS sessions');
         await customStatement('''
 CREATE VIRTUAL TABLE notes_fts USING fts5(
   title,

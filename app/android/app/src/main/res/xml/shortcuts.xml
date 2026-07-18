@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutId="new_text_note"
+        android:shortcutLongLabel="@string/shortcut_text_long"
+        android:shortcutShortLabel="@string/shortcut_text_short">
+        <intent
+            android:action="dev.potok.action.NEW_TEXT_NOTE"
+            android:targetClass="dev.potok.potok.MainActivity"
+            android:targetPackage="dev.potok.potok" />
+    </shortcut>
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutId="new_audio_note"
+        android:shortcutLongLabel="@string/shortcut_audio_long"
+        android:shortcutShortLabel="@string/shortcut_audio_short">
+        <intent
+            android:action="dev.potok.action.NEW_AUDIO_NOTE"
+            android:targetClass="dev.potok.potok.MainActivity"
+            android:targetPackage="dev.potok.potok" />
+    </shortcut>
+</shortcuts>

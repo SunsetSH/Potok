@@ -130,6 +130,35 @@ void main() {
     expect(state.order.field, NoteSortField.title);
   });
 
+  testWidgets('clear action remains fully visible on a narrow list pane', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 700));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(app());
+    await tester.pumpAndSettle();
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(NotesListPane)),
+    );
+    container
+        .read(noteListViewSettingsProvider.notifier)
+        .apply(
+          filter: const NoteListFilter(requireAudio: true),
+          order: const NoteListOrder(),
+        );
+    await tester.pump();
+
+    final clear = find.byKey(const ValueKey('clear-note-filters'));
+    expect(clear, findsOneWidget);
+    final rect = tester.getRect(clear);
+    expect(rect.left, greaterThanOrEqualTo(0));
+    expect(rect.right, lessThanOrEqualTo(390));
+    final filters = tester.getRect(
+      find.byKey(const ValueKey('note-filter-scroll')),
+    );
+    expect(rect.bottom, lessThanOrEqualTo(filters.top));
+  });
+
   testWidgets('current filter can be named and saved as a smart view', (
     tester,
   ) async {

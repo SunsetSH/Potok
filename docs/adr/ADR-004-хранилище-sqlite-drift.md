@@ -2,6 +2,11 @@
 
 Статус: принят (2026-07-16)
 
+Дополнение 2026-07-18: часть schema v2 про продуктовую `Session` отменена
+ADR-010. Schema v3 удаляет таблицу/ссылку с сохранением заметок; `SmartView`
+остаётся. Ниже сохранена история решения v2, но она больше не нормативна для
+актуальной схемы.
+
 ## Решение
 - `drift` поверх `sqlite3` (bundled native), общая схема Android/Windows, миграции drift.
 - PRAGMA: `foreign_keys=ON`, `journal_mode=WAL`, `synchronous=NORMAL` в WAL (durability-компромисс фиксируется здесь; crash-тесты обязаны это подтвердить), bounded `busy_timeout`.

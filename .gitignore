@@ -1,6 +1,44 @@
-# Личные настройки Claude Code
-.claude/settings.local.json
-.agents
-.claude
-.codex
+# --- Следы ИИ-агентов и их конфигурация ---
+.claude/
+.agents/
+.codex/
+.claudeignore
+CLAUDE.md
+AGENTS.md
+**/.claude/
+**/.agents/
 
+# --- IDE ---
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# --- ОС ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Сборка и кэши Flutter/Dart ---
+app/build/
+app/.dart_tool/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/coverage/
+*.log
+
+# --- Артефакты Android ---
+app/android/.gradle/
+app/android/local.properties
+app/android/key.properties
+app/android/app/debug/
+app/android/app/profile/
+app/android/app/release/
+*.keystore
+*.jks
+
+# --- ASR-модели: скачиваются скриптом, не хранятся в Git ---
+# Материализуются через app/tool/prepare_default_asr_model.ps1
+app/assets/models/default/*.onnx
+app/assets/models/default/*tokens.txt

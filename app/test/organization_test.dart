@@ -148,6 +148,62 @@ void main() {
       expect((await noteById(firstId)).revision, 2);
       expect((await noteById(secondId)).revision, 2);
     });
+
+    test(
+      'custom global/project tags can be renamed with optimistic revision',
+      () async {
+        final projectId = await projects.createProject(name: 'A', colorArgb: 0);
+        await tags.createTag(name: 'global custom', colorArgb: 1);
+        await tags.createTag(
+          name: 'project custom',
+          colorArgb: 2,
+          projectId: projectId,
+        );
+        final all = await tags.watchAllTags().first;
+        expect(all, hasLength(2));
+        expect(all.map((tag) => tag.scope), {
+          TagScope.global,
+          TagScope.project,
+        });
+
+        final projectTag = all.singleWhere((tag) => tag.projectId == projectId);
+        await tags.updateTag(
+          projectTag,
+          name: 'Переименован',
+          colorArgb: 0xFF23825E,
+        );
+        final updated = (await tags.watchAllTags().first).singleWhere(
+          (tag) => tag.id == projectTag.id,
+        );
+        expect(updated.name, 'Переименован');
+        expect(updated.colorArgb, 0xFF23825E);
+        expect(updated.scope, TagScope.project);
+        expect(updated.revision, projectTag.revision + 1);
+        await expectLater(
+          tags.updateTag(projectTag, name: 'stale', colorArgb: 0),
+          throwsStateError,
+        );
+        final journal =
+            await (db.select(db.operationJournal)..where(
+                  (row) =>
+                      row.entityId.equals(projectTag.id) &
+                      row.operationKind.equals('tag.updated'),
+                ))
+                .get();
+        expect(journal, hasLength(1));
+      },
+    );
+
+    test('tag rename preserves uniqueness inside its scope', () async {
+      await tags.createTag(name: 'Один', colorArgb: 0);
+      await tags.createTag(name: 'Два', colorArgb: 0);
+      final all = await tags.watchAllTags().first;
+      final second = all.singleWhere((tag) => tag.name == 'Два');
+      await expectLater(
+        tags.updateTag(second, name: ' один ', colorArgb: 0),
+        throwsStateError,
+      );
+    });
   });
 
   group('move to project with project-tag conflicts (FR-MOV-005)', () {

@@ -254,9 +254,7 @@ class _DataSettingsSectionState extends ConsumerState<DataSettingsSection> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                LinearProgressIndicator(
-                  value: total > 0 ? done / total : null,
-                ),
+                LinearProgressIndicator(value: total > 0 ? done / total : null),
                 const SizedBox(height: 8),
                 Text('Файлов: $done из $total'),
               ],

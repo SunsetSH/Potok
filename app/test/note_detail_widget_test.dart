@@ -2,9 +2,11 @@ import 'dart:io';
 
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_quill/flutter_quill.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:potok/application/clipboard_image_reader.dart';
 import 'package:potok/application/notes_service.dart';
 import 'package:potok/domain/clock.dart';
 import 'package:potok/domain/document.dart';
@@ -48,6 +50,7 @@ void main() {
     Note selected, {
     MediaAsset? audioAsset,
     AudioPlaybackController Function()? playerFactory,
+    ClipboardImageReader? clipboardReader,
   }) => ProviderScope(
     overrides: [
       notesServiceProvider.overrideWithValue(AsyncData(notes)),
@@ -62,6 +65,8 @@ void main() {
       ),
       revisionsProvider.overrideWith((ref, id) => Stream.value(const [])),
       mediaStoreProvider.overrideWithValue(AsyncData(MediaStore(temp))),
+      if (clipboardReader != null)
+        clipboardImageReaderProvider.overrideWithValue(clipboardReader),
       if (playerFactory != null)
         audioPlaybackControllerFactoryProvider.overrideWithValue(playerFactory),
     ],
@@ -133,6 +138,20 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('Ctrl+V delegates paste to the clipboard image adapter', (
+    tester,
+  ) async {
+    final clipboard = _FakeClipboardImageReader();
+    await tester.pumpWidget(detail(note, clipboardReader: clipboard));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(QuillEditor));
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
+    expect(clipboard.reads, 1);
+  });
+
   testWidgets('audio controls expose play, seek and allowlisted speed', (
     tester,
   ) async {
@@ -156,10 +175,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(
-      fake.openedPath!.replaceAll('\\', '/'),
-      endsWith('/au/audio-1.m4a'),
-    );
+    expect(fake.openedPath!.replaceAll('\\', '/'), endsWith('/au/audio-1.m4a'));
     await tester.tap(find.byKey(const ValueKey('audio-play-audio-1')));
     expect(fake.state.playing, isTrue);
     await tester.tap(find.byKey(const ValueKey('audio-forward-audio-1')));
@@ -175,11 +191,25 @@ void main() {
     expect(fake.state.playing, isFalse);
     final progress = find.byKey(const ValueKey('audio-progress-audio-1'));
     expect(progress, findsOneWidget);
+    await fake.seek(const Duration(seconds: 25));
+    await tester.pump();
+    expect(tester.widget<Slider>(progress).value, 25000);
+    expect(tester.widget<Slider>(progress).max, 60000);
     expect(
       find.ancestor(of: progress, matching: find.byType(Semantics)),
       findsWidgets,
     );
   });
+}
+
+class _FakeClipboardImageReader implements ClipboardImageReader {
+  int reads = 0;
+
+  @override
+  Future<ClipboardImage?> readImage() async {
+    reads++;
+    return null;
+  }
 }
 
 class _FakeAudioPlaybackController extends AudioPlaybackController {

@@ -63,7 +63,6 @@ void main() {
         ),
         projectsProvider.overrideWith((ref) => Stream.value(projects)),
         smartViewsProvider.overrideWith((ref) => Stream.value(const [])),
-        currentSessionProvider.overrideWith((ref) => Stream.value(null)),
         availableTagsProvider.overrideWith(
           (ref, projectId) => Stream.value(const []),
         ),
@@ -156,7 +155,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.byType(LongPressDraggable<Note>), findsOneWidget);
+    expect(find.byType(Draggable<Note>), findsOneWidget);
     final targetFinder = find.byKey(const ValueKey('project-drop-project-1'));
     expect(targetFinder, findsOneWidget);
     final target = tester.widget<DragTarget<Note>>(targetFinder);

@@ -83,6 +83,71 @@ void main() {
     );
   });
 
+  test('clipboard bytes use the same managed publication pipeline', () async {
+    final asset = await images.attachImageBytes(
+      note,
+      Uint8List.fromList(const [
+        0x89,
+        0x50,
+        0x4E,
+        0x47,
+        0x0D,
+        0x0A,
+        0x1A,
+        0x0A,
+        7,
+      ]),
+      extension: 'png',
+    );
+
+    expect(asset.lifecycleState, AssetLifecycle.ready);
+    expect(asset.mimeType, 'image/png');
+    expect(File(media.absolutePath(asset.relativePath)).existsSync(), isTrue);
+  });
+
+  test('Windows clipboard BMP uses the managed publication pipeline', () async {
+    final asset = await images.attachImageBytes(
+      note,
+      Uint8List.fromList(const [0x42, 0x4D, 1, 2, 3, 4]),
+      extension: 'bmp',
+    );
+
+    expect(asset.lifecycleState, AssetLifecycle.ready);
+    expect(asset.mimeType, 'image/bmp');
+    expect(asset.relativePath, endsWith('.bmp'));
+  });
+
+  test('image-only quick capture is hidden until durable publish', () async {
+    final draft = await notes.beginImageNoteDraft();
+    final asset = await images.attachImageBytes(
+      draft,
+      Uint8List.fromList(const [
+        0x89,
+        0x50,
+        0x4E,
+        0x47,
+        0x0D,
+        0x0A,
+        0x1A,
+        0x0A,
+        9,
+      ]),
+      extension: 'png',
+    );
+    final document = const PotokDocument.empty().appendImage(asset.id);
+    await notes.updateImageNoteDraft(draft, document);
+    final updatedDraft = (await notes.getNote(draft.id))!;
+
+    expect(updatedDraft.deletedAtUtc, isNotNull);
+    await notes.publishImageNoteDraft(updatedDraft, document);
+    final published = (await notes.getNote(draft.id))!;
+
+    expect(published.deletedAtUtc, isNull);
+    expect(PotokDocument.decode(published.documentJson).managedAssetIds, {
+      asset.id,
+    });
+  });
+
   test(
     'rejects extension spoofing before DB or filesystem publication',
     () async {

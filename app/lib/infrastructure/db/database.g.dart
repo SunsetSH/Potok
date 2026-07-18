@@ -678,648 +678,6 @@ class ProjectsCompanion extends UpdateCompanion<Project> {
   }
 }
 
-class $SessionsTable extends Sessions with TableInfo<$SessionsTable, Session> {
-  @override
-  final GeneratedDatabase attachedDatabase;
-  final String? _alias;
-  $SessionsTable(this.attachedDatabase, [this._alias]);
-  static const VerificationMeta _idMeta = const VerificationMeta('id');
-  @override
-  late final GeneratedColumn<String> id = GeneratedColumn<String>(
-    'id',
-    aliasedName,
-    false,
-    type: DriftSqlType.string,
-    requiredDuringInsert: true,
-  );
-  static const VerificationMeta _projectIdMeta = const VerificationMeta(
-    'projectId',
-  );
-  @override
-  late final GeneratedColumn<String> projectId = GeneratedColumn<String>(
-    'project_id',
-    aliasedName,
-    false,
-    type: DriftSqlType.string,
-    requiredDuringInsert: true,
-    defaultConstraints: GeneratedColumn.constraintIsAlways(
-      'REFERENCES projects (id)',
-    ),
-  );
-  static const VerificationMeta _titleMeta = const VerificationMeta('title');
-  @override
-  late final GeneratedColumn<String> title = GeneratedColumn<String>(
-    'title',
-    aliasedName,
-    false,
-    additionalChecks: GeneratedColumn.checkTextLength(
-      minTextLength: 1,
-      maxTextLength: 200,
-    ),
-    type: DriftSqlType.string,
-    requiredDuringInsert: true,
-  );
-  @override
-  late final GeneratedColumnWithTypeConverter<SessionState, String> state =
-      GeneratedColumn<String>(
-        'state',
-        aliasedName,
-        false,
-        type: DriftSqlType.string,
-        requiredDuringInsert: false,
-        defaultValue: const Constant('active'),
-      ).withConverter<SessionState>($SessionsTable.$converterstate);
-  static const VerificationMeta _startedAtUtcMeta = const VerificationMeta(
-    'startedAtUtc',
-  );
-  @override
-  late final GeneratedColumn<int> startedAtUtc = GeneratedColumn<int>(
-    'started_at_utc',
-    aliasedName,
-    false,
-    type: DriftSqlType.int,
-    requiredDuringInsert: true,
-  );
-  static const VerificationMeta _endedAtUtcMeta = const VerificationMeta(
-    'endedAtUtc',
-  );
-  @override
-  late final GeneratedColumn<int> endedAtUtc = GeneratedColumn<int>(
-    'ended_at_utc',
-    aliasedName,
-    true,
-    type: DriftSqlType.int,
-    requiredDuringInsert: false,
-  );
-  static const VerificationMeta _createdAtUtcMeta = const VerificationMeta(
-    'createdAtUtc',
-  );
-  @override
-  late final GeneratedColumn<int> createdAtUtc = GeneratedColumn<int>(
-    'created_at_utc',
-    aliasedName,
-    false,
-    type: DriftSqlType.int,
-    requiredDuringInsert: true,
-  );
-  static const VerificationMeta _updatedAtUtcMeta = const VerificationMeta(
-    'updatedAtUtc',
-  );
-  @override
-  late final GeneratedColumn<int> updatedAtUtc = GeneratedColumn<int>(
-    'updated_at_utc',
-    aliasedName,
-    false,
-    type: DriftSqlType.int,
-    requiredDuringInsert: true,
-  );
-  static const VerificationMeta _deletedAtUtcMeta = const VerificationMeta(
-    'deletedAtUtc',
-  );
-  @override
-  late final GeneratedColumn<int> deletedAtUtc = GeneratedColumn<int>(
-    'deleted_at_utc',
-    aliasedName,
-    true,
-    type: DriftSqlType.int,
-    requiredDuringInsert: false,
-  );
-  static const VerificationMeta _revisionMeta = const VerificationMeta(
-    'revision',
-  );
-  @override
-  late final GeneratedColumn<int> revision = GeneratedColumn<int>(
-    'revision',
-    aliasedName,
-    false,
-    type: DriftSqlType.int,
-    requiredDuringInsert: false,
-    defaultValue: const Constant(1),
-  );
-  @override
-  List<GeneratedColumn> get $columns => [
-    id,
-    projectId,
-    title,
-    state,
-    startedAtUtc,
-    endedAtUtc,
-    createdAtUtc,
-    updatedAtUtc,
-    deletedAtUtc,
-    revision,
-  ];
-  @override
-  String get aliasedName => _alias ?? actualTableName;
-  @override
-  String get actualTableName => $name;
-  static const String $name = 'sessions';
-  @override
-  VerificationContext validateIntegrity(
-    Insertable<Session> instance, {
-    bool isInserting = false,
-  }) {
-    final context = VerificationContext();
-    final data = instance.toColumns(true);
-    if (data.containsKey('id')) {
-      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
-    } else if (isInserting) {
-      context.missing(_idMeta);
-    }
-    if (data.containsKey('project_id')) {
-      context.handle(
-        _projectIdMeta,
-        projectId.isAcceptableOrUnknown(data['project_id']!, _projectIdMeta),
-      );
-    } else if (isInserting) {
-      context.missing(_projectIdMeta);
-    }
-    if (data.containsKey('title')) {
-      context.handle(
-        _titleMeta,
-        title.isAcceptableOrUnknown(data['title']!, _titleMeta),
-      );
-    } else if (isInserting) {
-      context.missing(_titleMeta);
-    }
-    if (data.containsKey('started_at_utc')) {
-      context.handle(
-        _startedAtUtcMeta,
-        startedAtUtc.isAcceptableOrUnknown(
-          data['started_at_utc']!,
-          _startedAtUtcMeta,
-        ),
-      );
-    } else if (isInserting) {
-      context.missing(_startedAtUtcMeta);
-    }
-    if (data.containsKey('ended_at_utc')) {
-      context.handle(
-        _endedAtUtcMeta,
-        endedAtUtc.isAcceptableOrUnknown(
-          data['ended_at_utc']!,
-          _endedAtUtcMeta,
-        ),
-      );
-    }
-    if (data.containsKey('created_at_utc')) {
-      context.handle(
-        _createdAtUtcMeta,
-        createdAtUtc.isAcceptableOrUnknown(
-          data['created_at_utc']!,
-          _createdAtUtcMeta,
-        ),
-      );
-    } else if (isInserting) {
-      context.missing(_createdAtUtcMeta);
-    }
-    if (data.containsKey('updated_at_utc')) {
-      context.handle(
-        _updatedAtUtcMeta,
-        updatedAtUtc.isAcceptableOrUnknown(
-          data['updated_at_utc']!,
-          _updatedAtUtcMeta,
-        ),
-      );
-    } else if (isInserting) {
-      context.missing(_updatedAtUtcMeta);
-    }
-    if (data.containsKey('deleted_at_utc')) {
-      context.handle(
-        _deletedAtUtcMeta,
-        deletedAtUtc.isAcceptableOrUnknown(
-          data['deleted_at_utc']!,
-          _deletedAtUtcMeta,
-        ),
-      );
-    }
-    if (data.containsKey('revision')) {
-      context.handle(
-        _revisionMeta,
-        revision.isAcceptableOrUnknown(data['revision']!, _revisionMeta),
-      );
-    }
-    return context;
-  }
-
-  @override
-  Set<GeneratedColumn> get $primaryKey => {id};
-  @override
-  Session map(Map<String, dynamic> data, {String? tablePrefix}) {
-    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
-    return Session(
-      id: attachedDatabase.typeMapping.read(
-        DriftSqlType.string,
-        data['${effectivePrefix}id'],
-      )!,
-      projectId: attachedDatabase.typeMapping.read(
-        DriftSqlType.string,
-        data['${effectivePrefix}project_id'],
-      )!,
-      title: attachedDatabase.typeMapping.read(
-        DriftSqlType.string,
-        data['${effectivePrefix}title'],
-      )!,
-      state: $SessionsTable.$converterstate.fromSql(
-        attachedDatabase.typeMapping.read(
-          DriftSqlType.string,
-          data['${effectivePrefix}state'],
-        )!,
-      ),
-      startedAtUtc: attachedDatabase.typeMapping.read(
-        DriftSqlType.int,
-        data['${effectivePrefix}started_at_utc'],
-      )!,
-      endedAtUtc: attachedDatabase.typeMapping.read(
-        DriftSqlType.int,
-        data['${effectivePrefix}ended_at_utc'],
-      ),
-      createdAtUtc: attachedDatabase.typeMapping.read(
-        DriftSqlType.int,
-        data['${effectivePrefix}created_at_utc'],
-      )!,
-      updatedAtUtc: attachedDatabase.typeMapping.read(
-        DriftSqlType.int,
-        data['${effectivePrefix}updated_at_utc'],
-      )!,
-      deletedAtUtc: attachedDatabase.typeMapping.read(
-        DriftSqlType.int,
-        data['${effectivePrefix}deleted_at_utc'],
-      ),
-      revision: attachedDatabase.typeMapping.read(
-        DriftSqlType.int,
-        data['${effectivePrefix}revision'],
-      )!,
-    );
-  }
-
-  @override
-  $SessionsTable createAlias(String alias) {
-    return $SessionsTable(attachedDatabase, alias);
-  }
-
-  static JsonTypeConverter2<SessionState, String, String> $converterstate =
-      const EnumNameConverter<SessionState>(SessionState.values);
-}
-
-class Session extends DataClass implements Insertable<Session> {
-  final String id;
-  final String projectId;
-  final String title;
-  final SessionState state;
-  final int startedAtUtc;
-  final int? endedAtUtc;
-  final int createdAtUtc;
-  final int updatedAtUtc;
-  final int? deletedAtUtc;
-  final int revision;
-  const Session({
-    required this.id,
-    required this.projectId,
-    required this.title,
-    required this.state,
-    required this.startedAtUtc,
-    this.endedAtUtc,
-    required this.createdAtUtc,
-    required this.updatedAtUtc,
-    this.deletedAtUtc,
-    required this.revision,
-  });
-  @override
-  Map<String, Expression> toColumns(bool nullToAbsent) {
-    final map = <String, Expression>{};
-    map['id'] = Variable<String>(id);
-    map['project_id'] = Variable<String>(projectId);
-    map['title'] = Variable<String>(title);
-    {
-      map['state'] = Variable<String>(
-        $SessionsTable.$converterstate.toSql(state),
-      );
-    }
-    map['started_at_utc'] = Variable<int>(startedAtUtc);
-    if (!nullToAbsent || endedAtUtc != null) {
-      map['ended_at_utc'] = Variable<int>(endedAtUtc);
-    }
-    map['created_at_utc'] = Variable<int>(createdAtUtc);
-    map['updated_at_utc'] = Variable<int>(updatedAtUtc);
-    if (!nullToAbsent || deletedAtUtc != null) {
-      map['deleted_at_utc'] = Variable<int>(deletedAtUtc);
-    }
-    map['revision'] = Variable<int>(revision);
-    return map;
-  }
-
-  SessionsCompanion toCompanion(bool nullToAbsent) {
-    return SessionsCompanion(
-      id: Value(id),
-      projectId: Value(projectId),
-      title: Value(title),
-      state: Value(state),
-      startedAtUtc: Value(startedAtUtc),
-      endedAtUtc: endedAtUtc == null && nullToAbsent
-          ? const Value.absent()
-          : Value(endedAtUtc),
-      createdAtUtc: Value(createdAtUtc),
-      updatedAtUtc: Value(updatedAtUtc),
-      deletedAtUtc: deletedAtUtc == null && nullToAbsent
-          ? const Value.absent()
-          : Value(deletedAtUtc),
-      revision: Value(revision),
-    );
-  }
-
-  factory Session.fromJson(
-    Map<String, dynamic> json, {
-    ValueSerializer? serializer,
-  }) {
-    serializer ??= driftRuntimeOptions.defaultSerializer;
-    return Session(
-      id: serializer.fromJson<String>(json['id']),
-      projectId: serializer.fromJson<String>(json['projectId']),
-      title: serializer.fromJson<String>(json['title']),
-      state: $SessionsTable.$converterstate.fromJson(
-        serializer.fromJson<String>(json['state']),
-      ),
-      startedAtUtc: serializer.fromJson<int>(json['startedAtUtc']),
-      endedAtUtc: serializer.fromJson<int?>(json['endedAtUtc']),
-      createdAtUtc: serializer.fromJson<int>(json['createdAtUtc']),
-      updatedAtUtc: serializer.fromJson<int>(json['updatedAtUtc']),
-      deletedAtUtc: serializer.fromJson<int?>(json['deletedAtUtc']),
-      revision: serializer.fromJson<int>(json['revision']),
-    );
-  }
-  @override
-  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
-    serializer ??= driftRuntimeOptions.defaultSerializer;
-    return <String, dynamic>{
-      'id': serializer.toJson<String>(id),
-      'projectId': serializer.toJson<String>(projectId),
-      'title': serializer.toJson<String>(title),
-      'state': serializer.toJson<String>(
-        $SessionsTable.$converterstate.toJson(state),
-      ),
-      'startedAtUtc': serializer.toJson<int>(startedAtUtc),
-      'endedAtUtc': serializer.toJson<int?>(endedAtUtc),
-      'createdAtUtc': serializer.toJson<int>(createdAtUtc),
-      'updatedAtUtc': serializer.toJson<int>(updatedAtUtc),
-      'deletedAtUtc': serializer.toJson<int?>(deletedAtUtc),
-      'revision': serializer.toJson<int>(revision),
-    };
-  }
-
-  Session copyWith({
-    String? id,
-    String? projectId,
-    String? title,
-    SessionState? state,
-    int? startedAtUtc,
-    Value<int?> endedAtUtc = const Value.absent(),
-    int? createdAtUtc,
-    int? updatedAtUtc,
-    Value<int?> deletedAtUtc = const Value.absent(),
-    int? revision,
-  }) => Session(
-    id: id ?? this.id,
-    projectId: projectId ?? this.projectId,
-    title: title ?? this.title,
-    state: state ?? this.state,
-    startedAtUtc: startedAtUtc ?? this.startedAtUtc,
-    endedAtUtc: endedAtUtc.present ? endedAtUtc.value : this.endedAtUtc,
-    createdAtUtc: createdAtUtc ?? this.createdAtUtc,
-    updatedAtUtc: updatedAtUtc ?? this.updatedAtUtc,
-    deletedAtUtc: deletedAtUtc.present ? deletedAtUtc.value : this.deletedAtUtc,
-    revision: revision ?? this.revision,
-  );
-  Session copyWithCompanion(SessionsCompanion data) {
-    return Session(
-      id: data.id.present ? data.id.value : this.id,
-      projectId: data.projectId.present ? data.projectId.value : this.projectId,
-      title: data.title.present ? data.title.value : this.title,
-      state: data.state.present ? data.state.value : this.state,
-      startedAtUtc: data.startedAtUtc.present
-          ? data.startedAtUtc.value
-          : this.startedAtUtc,
-      endedAtUtc: data.endedAtUtc.present
-          ? data.endedAtUtc.value
-          : this.endedAtUtc,
-      createdAtUtc: data.createdAtUtc.present
-          ? data.createdAtUtc.value
-          : this.createdAtUtc,
-      updatedAtUtc: data.updatedAtUtc.present
-          ? data.updatedAtUtc.value
-          : this.updatedAtUtc,
-      deletedAtUtc: data.deletedAtUtc.present
-          ? data.deletedAtUtc.value
-          : this.deletedAtUtc,
-      revision: data.revision.present ? data.revision.value : this.revision,
-    );
-  }
-
-  @override
-  String toString() {
-    return (StringBuffer('Session(')
-          ..write('id: $id, ')
-          ..write('projectId: $projectId, ')
-          ..write('title: $title, ')
-          ..write('state: $state, ')
-          ..write('startedAtUtc: $startedAtUtc, ')
-          ..write('endedAtUtc: $endedAtUtc, ')
-          ..write('createdAtUtc: $createdAtUtc, ')
-          ..write('updatedAtUtc: $updatedAtUtc, ')
-          ..write('deletedAtUtc: $deletedAtUtc, ')
-          ..write('revision: $revision')
-          ..write(')'))
-        .toString();
-  }
-
-  @override
-  int get hashCode => Object.hash(
-    id,
-    projectId,
-    title,
-    state,
-    startedAtUtc,
-    endedAtUtc,
-    createdAtUtc,
-    updatedAtUtc,
-    deletedAtUtc,
-    revision,
-  );
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      (other is Session &&
-          other.id == this.id &&
-          other.projectId == this.projectId &&
-          other.title == this.title &&
-          other.state == this.state &&
-          other.startedAtUtc == this.startedAtUtc &&
-          other.endedAtUtc == this.endedAtUtc &&
-          other.createdAtUtc == this.createdAtUtc &&
-          other.updatedAtUtc == this.updatedAtUtc &&
-          other.deletedAtUtc == this.deletedAtUtc &&
-          other.revision == this.revision);
-}
-
-class SessionsCompanion extends UpdateCompanion<Session> {
-  final Value<String> id;
-  final Value<String> projectId;
-  final Value<String> title;
-  final Value<SessionState> state;
-  final Value<int> startedAtUtc;
-  final Value<int?> endedAtUtc;
-  final Value<int> createdAtUtc;
-  final Value<int> updatedAtUtc;
-  final Value<int?> deletedAtUtc;
-  final Value<int> revision;
-  final Value<int> rowid;
-  const SessionsCompanion({
-    this.id = const Value.absent(),
-    this.projectId = const Value.absent(),
-    this.title = const Value.absent(),
-    this.state = const Value.absent(),
-    this.startedAtUtc = const Value.absent(),
-    this.endedAtUtc = const Value.absent(),
-    this.createdAtUtc = const Value.absent(),
-    this.updatedAtUtc = const Value.absent(),
-    this.deletedAtUtc = const Value.absent(),
-    this.revision = const Value.absent(),
-    this.rowid = const Value.absent(),
-  });
-  SessionsCompanion.insert({
-    required String id,
-    required String projectId,
-    required String title,
-    this.state = const Value.absent(),
-    required int startedAtUtc,
-    this.endedAtUtc = const Value.absent(),
-    required int createdAtUtc,
-    required int updatedAtUtc,
-    this.deletedAtUtc = const Value.absent(),
-    this.revision = const Value.absent(),
-    this.rowid = const Value.absent(),
-  }) : id = Value(id),
-       projectId = Value(projectId),
-       title = Value(title),
-       startedAtUtc = Value(startedAtUtc),
-       createdAtUtc = Value(createdAtUtc),
-       updatedAtUtc = Value(updatedAtUtc);
-  static Insertable<Session> custom({
-    Expression<String>? id,
-    Expression<String>? projectId,
-    Expression<String>? title,
-    Expression<String>? state,
-    Expression<int>? startedAtUtc,
-    Expression<int>? endedAtUtc,
-    Expression<int>? createdAtUtc,
-    Expression<int>? updatedAtUtc,
-    Expression<int>? deletedAtUtc,
-    Expression<int>? revision,
-    Expression<int>? rowid,
-  }) {
-    return RawValuesInsertable({
-      if (id != null) 'id': id,
-      if (projectId != null) 'project_id': projectId,
-      if (title != null) 'title': title,
-      if (state != null) 'state': state,
-      if (startedAtUtc != null) 'started_at_utc': startedAtUtc,
-      if (endedAtUtc != null) 'ended_at_utc': endedAtUtc,
-      if (createdAtUtc != null) 'created_at_utc': createdAtUtc,
-      if (updatedAtUtc != null) 'updated_at_utc': updatedAtUtc,
-      if (deletedAtUtc != null) 'deleted_at_utc': deletedAtUtc,
-      if (revision != null) 'revision': revision,
-      if (rowid != null) 'rowid': rowid,
-    });
-  }
-
-  SessionsCompanion copyWith({
-    Value<String>? id,
-    Value<String>? projectId,
-    Value<String>? title,
-    Value<SessionState>? state,
-    Value<int>? startedAtUtc,
-    Value<int?>? endedAtUtc,
-    Value<int>? createdAtUtc,
-    Value<int>? updatedAtUtc,
-    Value<int?>? deletedAtUtc,
-    Value<int>? revision,
-    Value<int>? rowid,
-  }) {
-    return SessionsCompanion(
-      id: id ?? this.id,
-      projectId: projectId ?? this.projectId,
-      title: title ?? this.title,
-      state: state ?? this.state,
-      startedAtUtc: startedAtUtc ?? this.startedAtUtc,
-      endedAtUtc: endedAtUtc ?? this.endedAtUtc,
-      createdAtUtc: createdAtUtc ?? this.createdAtUtc,
-      updatedAtUtc: updatedAtUtc ?? this.updatedAtUtc,
-      deletedAtUtc: deletedAtUtc ?? this.deletedAtUtc,
-      revision: revision ?? this.revision,
-      rowid: rowid ?? this.rowid,
-    );
-  }
-
-  @override
-  Map<String, Expression> toColumns(bool nullToAbsent) {
-    final map = <String, Expression>{};
-    if (id.present) {
-      map['id'] = Variable<String>(id.value);
-    }
-    if (projectId.present) {
-      map['project_id'] = Variable<String>(projectId.value);
-    }
-    if (title.present) {
-      map['title'] = Variable<String>(title.value);
-    }
-    if (state.present) {
-      map['state'] = Variable<String>(
-        $SessionsTable.$converterstate.toSql(state.value),
-      );
-    }
-    if (startedAtUtc.present) {
-      map['started_at_utc'] = Variable<int>(startedAtUtc.value);
-    }
-    if (endedAtUtc.present) {
-      map['ended_at_utc'] = Variable<int>(endedAtUtc.value);
-    }
-    if (createdAtUtc.present) {
-      map['created_at_utc'] = Variable<int>(createdAtUtc.value);
-    }
-    if (updatedAtUtc.present) {
-      map['updated_at_utc'] = Variable<int>(updatedAtUtc.value);
-    }
-    if (deletedAtUtc.present) {
-      map['deleted_at_utc'] = Variable<int>(deletedAtUtc.value);
-    }
-    if (revision.present) {
-      map['revision'] = Variable<int>(revision.value);
-    }
-    if (rowid.present) {
-      map['rowid'] = Variable<int>(rowid.value);
-    }
-    return map;
-  }
-
-  @override
-  String toString() {
-    return (StringBuffer('SessionsCompanion(')
-          ..write('id: $id, ')
-          ..write('projectId: $projectId, ')
-          ..write('title: $title, ')
-          ..write('state: $state, ')
-          ..write('startedAtUtc: $startedAtUtc, ')
-          ..write('endedAtUtc: $endedAtUtc, ')
-          ..write('createdAtUtc: $createdAtUtc, ')
-          ..write('updatedAtUtc: $updatedAtUtc, ')
-          ..write('deletedAtUtc: $deletedAtUtc, ')
-          ..write('revision: $revision, ')
-          ..write('rowid: $rowid')
-          ..write(')'))
-        .toString();
-  }
-}
-
 class $NotesTable extends Notes with TableInfo<$NotesTable, Note> {
   @override
   final GeneratedDatabase attachedDatabase;
@@ -1346,20 +704,6 @@ class $NotesTable extends Notes with TableInfo<$NotesTable, Note> {
     requiredDuringInsert: false,
     defaultConstraints: GeneratedColumn.constraintIsAlways(
       'REFERENCES projects (id)',
-    ),
-  );
-  static const VerificationMeta _sessionIdMeta = const VerificationMeta(
-    'sessionId',
-  );
-  @override
-  late final GeneratedColumn<String> sessionId = GeneratedColumn<String>(
-    'session_id',
-    aliasedName,
-    true,
-    type: DriftSqlType.string,
-    requiredDuringInsert: false,
-    defaultConstraints: GeneratedColumn.constraintIsAlways(
-      'REFERENCES sessions (id) ON DELETE SET NULL',
     ),
   );
   static const VerificationMeta _titleMeta = const VerificationMeta('title');
@@ -1525,7 +869,6 @@ class $NotesTable extends Notes with TableInfo<$NotesTable, Note> {
   List<GeneratedColumn> get $columns => [
     id,
     projectId,
-    sessionId,
     title,
     status,
     documentJson,
@@ -1562,12 +905,6 @@ class $NotesTable extends Notes with TableInfo<$NotesTable, Note> {
       context.handle(
         _projectIdMeta,
         projectId.isAcceptableOrUnknown(data['project_id']!, _projectIdMeta),
-      );
-    }
-    if (data.containsKey('session_id')) {
-      context.handle(
-        _sessionIdMeta,
-        sessionId.isAcceptableOrUnknown(data['session_id']!, _sessionIdMeta),
       );
     }
     if (data.containsKey('title')) {
@@ -1691,10 +1028,6 @@ class $NotesTable extends Notes with TableInfo<$NotesTable, Note> {
         DriftSqlType.string,
         data['${effectivePrefix}project_id'],
       ),
-      sessionId: attachedDatabase.typeMapping.read(
-        DriftSqlType.string,
-        data['${effectivePrefix}session_id'],
-      ),
       title: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}title'],
@@ -1772,7 +1105,6 @@ class $NotesTable extends Notes with TableInfo<$NotesTable, Note> {
 class Note extends DataClass implements Insertable<Note> {
   final String id;
   final String? projectId;
-  final String? sessionId;
   final String? title;
   final NoteStatus status;
   final String documentJson;
@@ -1790,7 +1122,6 @@ class Note extends DataClass implements Insertable<Note> {
   const Note({
     required this.id,
     this.projectId,
-    this.sessionId,
     this.title,
     required this.status,
     required this.documentJson,
@@ -1812,9 +1143,6 @@ class Note extends DataClass implements Insertable<Note> {
     map['id'] = Variable<String>(id);
     if (!nullToAbsent || projectId != null) {
       map['project_id'] = Variable<String>(projectId);
-    }
-    if (!nullToAbsent || sessionId != null) {
-      map['session_id'] = Variable<String>(sessionId);
     }
     if (!nullToAbsent || title != null) {
       map['title'] = Variable<String>(title);
@@ -1857,9 +1185,6 @@ class Note extends DataClass implements Insertable<Note> {
       projectId: projectId == null && nullToAbsent
           ? const Value.absent()
           : Value(projectId),
-      sessionId: sessionId == null && nullToAbsent
-          ? const Value.absent()
-          : Value(sessionId),
       title: title == null && nullToAbsent
           ? const Value.absent()
           : Value(title),
@@ -1895,7 +1220,6 @@ class Note extends DataClass implements Insertable<Note> {
     return Note(
       id: serializer.fromJson<String>(json['id']),
       projectId: serializer.fromJson<String?>(json['projectId']),
-      sessionId: serializer.fromJson<String?>(json['sessionId']),
       title: serializer.fromJson<String?>(json['title']),
       status: serializer.fromJson<NoteStatus>(json['status']),
       documentJson: serializer.fromJson<String>(json['documentJson']),
@@ -1920,7 +1244,6 @@ class Note extends DataClass implements Insertable<Note> {
     return <String, dynamic>{
       'id': serializer.toJson<String>(id),
       'projectId': serializer.toJson<String?>(projectId),
-      'sessionId': serializer.toJson<String?>(sessionId),
       'title': serializer.toJson<String?>(title),
       'status': serializer.toJson<NoteStatus>(status),
       'documentJson': serializer.toJson<String>(documentJson),
@@ -1943,7 +1266,6 @@ class Note extends DataClass implements Insertable<Note> {
   Note copyWith({
     String? id,
     Value<String?> projectId = const Value.absent(),
-    Value<String?> sessionId = const Value.absent(),
     Value<String?> title = const Value.absent(),
     NoteStatus? status,
     String? documentJson,
@@ -1961,7 +1283,6 @@ class Note extends DataClass implements Insertable<Note> {
   }) => Note(
     id: id ?? this.id,
     projectId: projectId.present ? projectId.value : this.projectId,
-    sessionId: sessionId.present ? sessionId.value : this.sessionId,
     title: title.present ? title.value : this.title,
     status: status ?? this.status,
     documentJson: documentJson ?? this.documentJson,
@@ -1985,7 +1306,6 @@ class Note extends DataClass implements Insertable<Note> {
     return Note(
       id: data.id.present ? data.id.value : this.id,
       projectId: data.projectId.present ? data.projectId.value : this.projectId,
-      sessionId: data.sessionId.present ? data.sessionId.value : this.sessionId,
       title: data.title.present ? data.title.value : this.title,
       status: data.status.present ? data.status.value : this.status,
       documentJson: data.documentJson.present
@@ -2028,7 +1348,6 @@ class Note extends DataClass implements Insertable<Note> {
     return (StringBuffer('Note(')
           ..write('id: $id, ')
           ..write('projectId: $projectId, ')
-          ..write('sessionId: $sessionId, ')
           ..write('title: $title, ')
           ..write('status: $status, ')
           ..write('documentJson: $documentJson, ')
@@ -2051,7 +1370,6 @@ class Note extends DataClass implements Insertable<Note> {
   int get hashCode => Object.hash(
     id,
     projectId,
-    sessionId,
     title,
     status,
     documentJson,
@@ -2073,7 +1391,6 @@ class Note extends DataClass implements Insertable<Note> {
       (other is Note &&
           other.id == this.id &&
           other.projectId == this.projectId &&
-          other.sessionId == this.sessionId &&
           other.title == this.title &&
           other.status == this.status &&
           other.documentJson == this.documentJson &&
@@ -2093,7 +1410,6 @@ class Note extends DataClass implements Insertable<Note> {
 class NotesCompanion extends UpdateCompanion<Note> {
   final Value<String> id;
   final Value<String?> projectId;
-  final Value<String?> sessionId;
   final Value<String?> title;
   final Value<NoteStatus> status;
   final Value<String> documentJson;
@@ -2112,7 +1428,6 @@ class NotesCompanion extends UpdateCompanion<Note> {
   const NotesCompanion({
     this.id = const Value.absent(),
     this.projectId = const Value.absent(),
-    this.sessionId = const Value.absent(),
     this.title = const Value.absent(),
     this.status = const Value.absent(),
     this.documentJson = const Value.absent(),
@@ -2132,7 +1447,6 @@ class NotesCompanion extends UpdateCompanion<Note> {
   NotesCompanion.insert({
     required String id,
     this.projectId = const Value.absent(),
-    this.sessionId = const Value.absent(),
     this.title = const Value.absent(),
     this.status = const Value.absent(),
     required String documentJson,
@@ -2157,7 +1471,6 @@ class NotesCompanion extends UpdateCompanion<Note> {
   static Insertable<Note> custom({
     Expression<String>? id,
     Expression<String>? projectId,
-    Expression<String>? sessionId,
     Expression<String>? title,
     Expression<String>? status,
     Expression<String>? documentJson,
@@ -2177,7 +1490,6 @@ class NotesCompanion extends UpdateCompanion<Note> {
     return RawValuesInsertable({
       if (id != null) 'id': id,
       if (projectId != null) 'project_id': projectId,
-      if (sessionId != null) 'session_id': sessionId,
       if (title != null) 'title': title,
       if (status != null) 'status': status,
       if (documentJson != null) 'document_json': documentJson,
@@ -2199,7 +1511,6 @@ class NotesCompanion extends UpdateCompanion<Note> {
   NotesCompanion copyWith({
     Value<String>? id,
     Value<String?>? projectId,
-    Value<String?>? sessionId,
     Value<String?>? title,
     Value<NoteStatus>? status,
     Value<String>? documentJson,
@@ -2219,7 +1530,6 @@ class NotesCompanion extends UpdateCompanion<Note> {
     return NotesCompanion(
       id: id ?? this.id,
       projectId: projectId ?? this.projectId,
-      sessionId: sessionId ?? this.sessionId,
       title: title ?? this.title,
       status: status ?? this.status,
       documentJson: documentJson ?? this.documentJson,
@@ -2246,9 +1556,6 @@ class NotesCompanion extends UpdateCompanion<Note> {
     }
     if (projectId.present) {
       map['project_id'] = Variable<String>(projectId.value);
-    }
-    if (sessionId.present) {
-      map['session_id'] = Variable<String>(sessionId.value);
     }
     if (title.present) {
       map['title'] = Variable<String>(title.value);
@@ -2307,7 +1614,6 @@ class NotesCompanion extends UpdateCompanion<Note> {
     return (StringBuffer('NotesCompanion(')
           ..write('id: $id, ')
           ..write('projectId: $projectId, ')
-          ..write('sessionId: $sessionId, ')
           ..write('title: $title, ')
           ..write('status: $status, ')
           ..write('documentJson: $documentJson, ')
@@ -7853,7 +7159,6 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   _$AppDatabase(QueryExecutor e) : super(e);
   $AppDatabaseManager get managers => $AppDatabaseManager(this);
   late final $ProjectsTable projects = $ProjectsTable(this);
-  late final $SessionsTable sessions = $SessionsTable(this);
   late final $NotesTable notes = $NotesTable(this);
   late final Index idxNotesProject = Index(
     'idx_notes_project',
@@ -7885,10 +7190,6 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     'idx_transcripts_asset',
     'CREATE INDEX idx_transcripts_asset ON transcript_revisions (audio_asset_id, created_at_utc DESC)',
   );
-  late final Index idxNotesSession = Index(
-    'idx_notes_session',
-    'CREATE INDEX idx_notes_session ON notes (session_id, created_at_utc ASC)',
-  );
   late final Index idxNotesLiveCreated = Index(
     'idx_notes_live_created',
     'CREATE INDEX idx_notes_live_created ON notes (deleted_at_utc, created_at_utc DESC, id DESC)',
@@ -7908,10 +7209,6 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   late final Index idxNotesTrashDeleted = Index(
     'idx_notes_trash_deleted',
     'CREATE INDEX idx_notes_trash_deleted ON notes (deleted_at_utc DESC, id DESC) WHERE deleted_at_utc IS NOT NULL',
-  );
-  late final Index idxSessionsSingleOpen = Index(
-    'idx_sessions_single_open',
-    'CREATE UNIQUE INDEX idx_sessions_single_open ON sessions ((1)) WHERE state IN (\'active\', \'paused\') AND deleted_at_utc IS NULL',
   );
   late final Index idxTagsGlobalName = Index(
     'idx_tags_global_name',
@@ -7945,7 +7242,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   late final $SmartViewsTable smartViews = $SmartViewsTable(this);
   Selectable<SearchNotesResult> searchNotes(String query, int limitRows) {
     return customSelect(
-      'SELECT"n"."id" AS "nested_0.id", "n"."project_id" AS "nested_0.project_id", "n"."session_id" AS "nested_0.session_id", "n"."title" AS "nested_0.title", "n"."status" AS "nested_0.status", "n"."document_json" AS "nested_0.document_json", "n"."document_plain_text" AS "nested_0.document_plain_text", "n"."source_kind" AS "nested_0.source_kind", "n"."is_pinned" AS "nested_0.is_pinned", "n"."is_favorite" AS "nested_0.is_favorite", "n"."favorited_at_utc" AS "nested_0.favorited_at_utc", "n"."completed_at_utc" AS "nested_0.completed_at_utc", "n"."event_at_utc" AS "nested_0.event_at_utc", "n"."created_at_utc" AS "nested_0.created_at_utc", "n"."updated_at_utc" AS "nested_0.updated_at_utc", "n"."deleted_at_utc" AS "nested_0.deleted_at_utc", "n"."revision" AS "nested_0.revision" FROM notes AS n INNER JOIN notes_fts AS f ON f."rowid" = n."rowid" WHERE notes_fts MATCH ?1 AND n.deleted_at_utc IS NULL ORDER BY bm25(notes_fts), n.id DESC LIMIT ?2',
+      'SELECT"n"."id" AS "nested_0.id", "n"."project_id" AS "nested_0.project_id", "n"."title" AS "nested_0.title", "n"."status" AS "nested_0.status", "n"."document_json" AS "nested_0.document_json", "n"."document_plain_text" AS "nested_0.document_plain_text", "n"."source_kind" AS "nested_0.source_kind", "n"."is_pinned" AS "nested_0.is_pinned", "n"."is_favorite" AS "nested_0.is_favorite", "n"."favorited_at_utc" AS "nested_0.favorited_at_utc", "n"."completed_at_utc" AS "nested_0.completed_at_utc", "n"."event_at_utc" AS "nested_0.event_at_utc", "n"."created_at_utc" AS "nested_0.created_at_utc", "n"."updated_at_utc" AS "nested_0.updated_at_utc", "n"."deleted_at_utc" AS "nested_0.deleted_at_utc", "n"."revision" AS "nested_0.revision" FROM notes AS n INNER JOIN notes_fts AS f ON f."rowid" = n."rowid" WHERE notes_fts MATCH ?1 AND n.deleted_at_utc IS NULL ORDER BY bm25(notes_fts), n.id DESC LIMIT ?2',
       variables: [Variable<String>(query), Variable<int>(limitRows)],
       readsFrom: {notes, notesFts},
     ).asyncMap(
@@ -7960,7 +7257,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     int limitRows,
   ) {
     return customSelect(
-      'SELECT DISTINCT"n"."id" AS "nested_0.id", "n"."project_id" AS "nested_0.project_id", "n"."session_id" AS "nested_0.session_id", "n"."title" AS "nested_0.title", "n"."status" AS "nested_0.status", "n"."document_json" AS "nested_0.document_json", "n"."document_plain_text" AS "nested_0.document_plain_text", "n"."source_kind" AS "nested_0.source_kind", "n"."is_pinned" AS "nested_0.is_pinned", "n"."is_favorite" AS "nested_0.is_favorite", "n"."favorited_at_utc" AS "nested_0.favorited_at_utc", "n"."completed_at_utc" AS "nested_0.completed_at_utc", "n"."event_at_utc" AS "nested_0.event_at_utc", "n"."created_at_utc" AS "nested_0.created_at_utc", "n"."updated_at_utc" AS "nested_0.updated_at_utc", "n"."deleted_at_utc" AS "nested_0.deleted_at_utc", "n"."revision" AS "nested_0.revision" FROM notes AS n LEFT JOIN projects AS p ON p.id = n.project_id AND p.deleted_at_utc IS NULL LEFT JOIN note_tags AS nt ON nt.note_id = n.id LEFT JOIN tags AS t ON t.id = nt.tag_id AND t.deleted_at_utc IS NULL WHERE n.deleted_at_utc IS NULL AND(p.name LIKE ?1 ESCAPE \'\\\' COLLATE NOCASE OR t.name LIKE ?1 ESCAPE \'\\\' COLLATE NOCASE)ORDER BY n.updated_at_utc DESC, n.id DESC LIMIT ?2',
+      'SELECT DISTINCT"n"."id" AS "nested_0.id", "n"."project_id" AS "nested_0.project_id", "n"."title" AS "nested_0.title", "n"."status" AS "nested_0.status", "n"."document_json" AS "nested_0.document_json", "n"."document_plain_text" AS "nested_0.document_plain_text", "n"."source_kind" AS "nested_0.source_kind", "n"."is_pinned" AS "nested_0.is_pinned", "n"."is_favorite" AS "nested_0.is_favorite", "n"."favorited_at_utc" AS "nested_0.favorited_at_utc", "n"."completed_at_utc" AS "nested_0.completed_at_utc", "n"."event_at_utc" AS "nested_0.event_at_utc", "n"."created_at_utc" AS "nested_0.created_at_utc", "n"."updated_at_utc" AS "nested_0.updated_at_utc", "n"."deleted_at_utc" AS "nested_0.deleted_at_utc", "n"."revision" AS "nested_0.revision" FROM notes AS n LEFT JOIN projects AS p ON p.id = n.project_id AND p.deleted_at_utc IS NULL LEFT JOIN note_tags AS nt ON nt.note_id = n.id LEFT JOIN tags AS t ON t.id = nt.tag_id AND t.deleted_at_utc IS NULL WHERE n.deleted_at_utc IS NULL AND(p.name LIKE ?1 ESCAPE \'\\\' COLLATE NOCASE OR t.name LIKE ?1 ESCAPE \'\\\' COLLATE NOCASE)ORDER BY n.updated_at_utc DESC, n.id DESC LIMIT ?2',
       variables: [Variable<String>(pattern), Variable<int>(limitRows)],
       readsFrom: {notes, projects, noteTags, tags},
     ).asyncMap(
@@ -7976,7 +7273,6 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   @override
   List<DatabaseSchemaEntity> get allSchemaEntities => [
     projects,
-    sessions,
     notes,
     idxNotesProject,
     idxNotesStatus,
@@ -7989,13 +7285,11 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     idxNoteEventsNote,
     transcriptRevisions,
     idxTranscriptsAsset,
-    idxNotesSession,
     idxNotesLiveCreated,
     idxNotesLiveUpdated,
     idxNotesLiveEvent,
     idxNotesLiveTitle,
     idxNotesTrashDeleted,
-    idxSessionsSingleOpen,
     idxTagsGlobalName,
     idxTagsProjectName,
     notesFts,
@@ -8010,13 +7304,6 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   ];
   @override
   StreamQueryUpdateRules get streamUpdateRules => const StreamQueryUpdateRules([
-    WritePropagation(
-      on: TableUpdateQuery.onTableName(
-        'sessions',
-        limitUpdateKind: UpdateKind.delete,
-      ),
-      result: [TableUpdate('notes', kind: UpdateKind.update)],
-    ),
     WritePropagation(
       on: TableUpdateQuery.onTableName(
         'notes',
@@ -8075,25 +7362,6 @@ typedef $$ProjectsTableUpdateCompanionBuilder =
 final class $$ProjectsTableReferences
     extends BaseReferences<_$AppDatabase, $ProjectsTable, Project> {
   $$ProjectsTableReferences(super.$_db, super.$_table, super.$_typedResult);
-
-  static MultiTypedResultKey<$SessionsTable, List<Session>> _sessionsRefsTable(
-    _$AppDatabase db,
-  ) => MultiTypedResultKey.fromTable(
-    db.sessions,
-    aliasName: 'projects__id__sessions__project_id',
-  );
-
-  $$SessionsTableProcessedTableManager get sessionsRefs {
-    final manager = $$SessionsTableTableManager(
-      $_db,
-      $_db.sessions,
-    ).filter((f) => f.projectId.id.sqlEquals($_itemColumn<String>('id')!));
-
-    final cache = $_typedResult.readTableOrNull(_sessionsRefsTable($_db));
-    return ProcessedTableManager(
-      manager.$state.copyWith(prefetchedData: cache),
-    );
-  }
 
   static MultiTypedResultKey<$NotesTable, List<Note>> _notesRefsTable(
     _$AppDatabase db,
@@ -8197,31 +7465,6 @@ class $$ProjectsTableFilterComposer
     column: $table.revision,
     builder: (column) => ColumnFilters(column),
   );
-
-  Expression<bool> sessionsRefs(
-    Expression<bool> Function($$SessionsTableFilterComposer f) f,
-  ) {
-    final $$SessionsTableFilterComposer composer = $composerBuilder(
-      composer: this,
-      getCurrentColumn: (t) => t.id,
-      referencedTable: $db.sessions,
-      getReferencedColumn: (t) => t.projectId,
-      builder:
-          (
-            joinBuilder, {
-            $addJoinBuilderToRootComposer,
-            $removeJoinBuilderFromRootComposer,
-          }) => $$SessionsTableFilterComposer(
-            $db: $db,
-            $table: $db.sessions,
-            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-            joinBuilder: joinBuilder,
-            $removeJoinBuilderFromRootComposer:
-                $removeJoinBuilderFromRootComposer,
-          ),
-    );
-    return f(composer);
-  }
 
   Expression<bool> notesRefs(
     Expression<bool> Function($$NotesTableFilterComposer f) f,
@@ -8391,31 +7634,6 @@ class $$ProjectsTableAnnotationComposer
   GeneratedColumn<int> get revision =>
       $composableBuilder(column: $table.revision, builder: (column) => column);
 
-  Expression<T> sessionsRefs<T extends Object>(
-    Expression<T> Function($$SessionsTableAnnotationComposer a) f,
-  ) {
-    final $$SessionsTableAnnotationComposer composer = $composerBuilder(
-      composer: this,
-      getCurrentColumn: (t) => t.id,
-      referencedTable: $db.sessions,
-      getReferencedColumn: (t) => t.projectId,
-      builder:
-          (
-            joinBuilder, {
-            $addJoinBuilderToRootComposer,
-            $removeJoinBuilderFromRootComposer,
-          }) => $$SessionsTableAnnotationComposer(
-            $db: $db,
-            $table: $db.sessions,
-            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-            joinBuilder: joinBuilder,
-            $removeJoinBuilderFromRootComposer:
-                $removeJoinBuilderFromRootComposer,
-          ),
-    );
-    return f(composer);
-  }
-
   Expression<T> notesRefs<T extends Object>(
     Expression<T> Function($$NotesTableAnnotationComposer a) f,
   ) {
@@ -8480,11 +7698,7 @@ class $$ProjectsTableTableManager
           $$ProjectsTableUpdateCompanionBuilder,
           (Project, $$ProjectsTableReferences),
           Project,
-          PrefetchHooks Function({
-            bool sessionsRefs,
-            bool notesRefs,
-            bool tagsRefs,
-          })
+          PrefetchHooks Function({bool notesRefs, bool tagsRefs})
         > {
   $$ProjectsTableTableManager(_$AppDatabase db, $ProjectsTable table)
     : super(
@@ -8561,77 +7775,43 @@ class $$ProjectsTableTableManager
                 ),
               )
               .toList(),
-          prefetchHooksCallback:
-              ({sessionsRefs = false, notesRefs = false, tagsRefs = false}) {
-                return PrefetchHooks(
-                  db: db,
-                  explicitlyWatchedTables: [
-                    if (sessionsRefs) db.sessions,
-                    if (notesRefs) db.notes,
-                    if (tagsRefs) db.tags,
-                  ],
-                  addJoins: null,
-                  getPrefetchedDataCallback: (items) async {
-                    return [
-                      if (sessionsRefs)
-                        await $_getPrefetchedData<
-                          Project,
-                          $ProjectsTable,
-                          Session
-                        >(
-                          currentTable: table,
-                          referencedTable: $$ProjectsTableReferences
-                              ._sessionsRefsTable(db),
-                          managerFromTypedResult: (p0) =>
-                              $$ProjectsTableReferences(
-                                db,
-                                table,
-                                p0,
-                              ).sessionsRefs,
-                          referencedItemsForCurrentItem:
-                              (item, referencedItems) => referencedItems.where(
-                                (e) => e.projectId == item.id,
-                              ),
-                          typedResults: items,
-                        ),
-                      if (notesRefs)
-                        await $_getPrefetchedData<
-                          Project,
-                          $ProjectsTable,
-                          Note
-                        >(
-                          currentTable: table,
-                          referencedTable: $$ProjectsTableReferences
-                              ._notesRefsTable(db),
-                          managerFromTypedResult: (p0) =>
-                              $$ProjectsTableReferences(
-                                db,
-                                table,
-                                p0,
-                              ).notesRefs,
-                          referencedItemsForCurrentItem:
-                              (item, referencedItems) => referencedItems.where(
-                                (e) => e.projectId == item.id,
-                              ),
-                          typedResults: items,
-                        ),
-                      if (tagsRefs)
-                        await $_getPrefetchedData<Project, $ProjectsTable, Tag>(
-                          currentTable: table,
-                          referencedTable: $$ProjectsTableReferences
-                              ._tagsRefsTable(db),
-                          managerFromTypedResult: (p0) =>
-                              $$ProjectsTableReferences(db, table, p0).tagsRefs,
-                          referencedItemsForCurrentItem:
-                              (item, referencedItems) => referencedItems.where(
-                                (e) => e.projectId == item.id,
-                              ),
-                          typedResults: items,
-                        ),
-                    ];
-                  },
-                );
+          prefetchHooksCallback: ({notesRefs = false, tagsRefs = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [
+                if (notesRefs) db.notes,
+                if (tagsRefs) db.tags,
+              ],
+              addJoins: null,
+              getPrefetchedDataCallback: (items) async {
+                return [
+                  if (notesRefs)
+                    await $_getPrefetchedData<Project, $ProjectsTable, Note>(
+                      currentTable: table,
+                      referencedTable: $$ProjectsTableReferences
+                          ._notesRefsTable(db),
+                      managerFromTypedResult: (p0) =>
+                          $$ProjectsTableReferences(db, table, p0).notesRefs,
+                      referencedItemsForCurrentItem: (item, referencedItems) =>
+                          referencedItems.where((e) => e.projectId == item.id),
+                      typedResults: items,
+                    ),
+                  if (tagsRefs)
+                    await $_getPrefetchedData<Project, $ProjectsTable, Tag>(
+                      currentTable: table,
+                      referencedTable: $$ProjectsTableReferences._tagsRefsTable(
+                        db,
+                      ),
+                      managerFromTypedResult: (p0) =>
+                          $$ProjectsTableReferences(db, table, p0).tagsRefs,
+                      referencedItemsForCurrentItem: (item, referencedItems) =>
+                          referencedItems.where((e) => e.projectId == item.id),
+                      typedResults: items,
+                    ),
+                ];
               },
+            );
+          },
         ),
       );
 }
@@ -8648,517 +7828,12 @@ typedef $$ProjectsTableProcessedTableManager =
       $$ProjectsTableUpdateCompanionBuilder,
       (Project, $$ProjectsTableReferences),
       Project,
-      PrefetchHooks Function({bool sessionsRefs, bool notesRefs, bool tagsRefs})
-    >;
-typedef $$SessionsTableCreateCompanionBuilder =
-    SessionsCompanion Function({
-      required String id,
-      required String projectId,
-      required String title,
-      Value<SessionState> state,
-      required int startedAtUtc,
-      Value<int?> endedAtUtc,
-      required int createdAtUtc,
-      required int updatedAtUtc,
-      Value<int?> deletedAtUtc,
-      Value<int> revision,
-      Value<int> rowid,
-    });
-typedef $$SessionsTableUpdateCompanionBuilder =
-    SessionsCompanion Function({
-      Value<String> id,
-      Value<String> projectId,
-      Value<String> title,
-      Value<SessionState> state,
-      Value<int> startedAtUtc,
-      Value<int?> endedAtUtc,
-      Value<int> createdAtUtc,
-      Value<int> updatedAtUtc,
-      Value<int?> deletedAtUtc,
-      Value<int> revision,
-      Value<int> rowid,
-    });
-
-final class $$SessionsTableReferences
-    extends BaseReferences<_$AppDatabase, $SessionsTable, Session> {
-  $$SessionsTableReferences(super.$_db, super.$_table, super.$_typedResult);
-
-  static $ProjectsTable _projectIdTable(_$AppDatabase db) =>
-      db.projects.createAlias('sessions__project_id__projects__id');
-
-  $$ProjectsTableProcessedTableManager get projectId {
-    final $_column = $_itemColumn<String>('project_id')!;
-
-    final manager = $$ProjectsTableTableManager(
-      $_db,
-      $_db.projects,
-    ).filter((f) => f.id.sqlEquals($_column));
-    final item = $_typedResult.readTableOrNull(_projectIdTable($_db));
-    if (item == null) return manager;
-    return ProcessedTableManager(
-      manager.$state.copyWith(prefetchedData: [item]),
-    );
-  }
-
-  static MultiTypedResultKey<$NotesTable, List<Note>> _notesRefsTable(
-    _$AppDatabase db,
-  ) => MultiTypedResultKey.fromTable(
-    db.notes,
-    aliasName: 'sessions__id__notes__session_id',
-  );
-
-  $$NotesTableProcessedTableManager get notesRefs {
-    final manager = $$NotesTableTableManager(
-      $_db,
-      $_db.notes,
-    ).filter((f) => f.sessionId.id.sqlEquals($_itemColumn<String>('id')!));
-
-    final cache = $_typedResult.readTableOrNull(_notesRefsTable($_db));
-    return ProcessedTableManager(
-      manager.$state.copyWith(prefetchedData: cache),
-    );
-  }
-}
-
-class $$SessionsTableFilterComposer
-    extends Composer<_$AppDatabase, $SessionsTable> {
-  $$SessionsTableFilterComposer({
-    required super.$db,
-    required super.$table,
-    super.joinBuilder,
-    super.$addJoinBuilderToRootComposer,
-    super.$removeJoinBuilderFromRootComposer,
-  });
-  ColumnFilters<String> get id => $composableBuilder(
-    column: $table.id,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<String> get title => $composableBuilder(
-    column: $table.title,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnWithTypeConverterFilters<SessionState, SessionState, String>
-  get state => $composableBuilder(
-    column: $table.state,
-    builder: (column) => ColumnWithTypeConverterFilters(column),
-  );
-
-  ColumnFilters<int> get startedAtUtc => $composableBuilder(
-    column: $table.startedAtUtc,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<int> get endedAtUtc => $composableBuilder(
-    column: $table.endedAtUtc,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<int> get createdAtUtc => $composableBuilder(
-    column: $table.createdAtUtc,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<int> get updatedAtUtc => $composableBuilder(
-    column: $table.updatedAtUtc,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<int> get deletedAtUtc => $composableBuilder(
-    column: $table.deletedAtUtc,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<int> get revision => $composableBuilder(
-    column: $table.revision,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  $$ProjectsTableFilterComposer get projectId {
-    final $$ProjectsTableFilterComposer composer = $composerBuilder(
-      composer: this,
-      getCurrentColumn: (t) => t.projectId,
-      referencedTable: $db.projects,
-      getReferencedColumn: (t) => t.id,
-      builder:
-          (
-            joinBuilder, {
-            $addJoinBuilderToRootComposer,
-            $removeJoinBuilderFromRootComposer,
-          }) => $$ProjectsTableFilterComposer(
-            $db: $db,
-            $table: $db.projects,
-            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-            joinBuilder: joinBuilder,
-            $removeJoinBuilderFromRootComposer:
-                $removeJoinBuilderFromRootComposer,
-          ),
-    );
-    return composer;
-  }
-
-  Expression<bool> notesRefs(
-    Expression<bool> Function($$NotesTableFilterComposer f) f,
-  ) {
-    final $$NotesTableFilterComposer composer = $composerBuilder(
-      composer: this,
-      getCurrentColumn: (t) => t.id,
-      referencedTable: $db.notes,
-      getReferencedColumn: (t) => t.sessionId,
-      builder:
-          (
-            joinBuilder, {
-            $addJoinBuilderToRootComposer,
-            $removeJoinBuilderFromRootComposer,
-          }) => $$NotesTableFilterComposer(
-            $db: $db,
-            $table: $db.notes,
-            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-            joinBuilder: joinBuilder,
-            $removeJoinBuilderFromRootComposer:
-                $removeJoinBuilderFromRootComposer,
-          ),
-    );
-    return f(composer);
-  }
-}
-
-class $$SessionsTableOrderingComposer
-    extends Composer<_$AppDatabase, $SessionsTable> {
-  $$SessionsTableOrderingComposer({
-    required super.$db,
-    required super.$table,
-    super.joinBuilder,
-    super.$addJoinBuilderToRootComposer,
-    super.$removeJoinBuilderFromRootComposer,
-  });
-  ColumnOrderings<String> get id => $composableBuilder(
-    column: $table.id,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<String> get title => $composableBuilder(
-    column: $table.title,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<String> get state => $composableBuilder(
-    column: $table.state,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<int> get startedAtUtc => $composableBuilder(
-    column: $table.startedAtUtc,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<int> get endedAtUtc => $composableBuilder(
-    column: $table.endedAtUtc,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<int> get createdAtUtc => $composableBuilder(
-    column: $table.createdAtUtc,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<int> get updatedAtUtc => $composableBuilder(
-    column: $table.updatedAtUtc,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<int> get deletedAtUtc => $composableBuilder(
-    column: $table.deletedAtUtc,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<int> get revision => $composableBuilder(
-    column: $table.revision,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  $$ProjectsTableOrderingComposer get projectId {
-    final $$ProjectsTableOrderingComposer composer = $composerBuilder(
-      composer: this,
-      getCurrentColumn: (t) => t.projectId,
-      referencedTable: $db.projects,
-      getReferencedColumn: (t) => t.id,
-      builder:
-          (
-            joinBuilder, {
-            $addJoinBuilderToRootComposer,
-            $removeJoinBuilderFromRootComposer,
-          }) => $$ProjectsTableOrderingComposer(
-            $db: $db,
-            $table: $db.projects,
-            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-            joinBuilder: joinBuilder,
-            $removeJoinBuilderFromRootComposer:
-                $removeJoinBuilderFromRootComposer,
-          ),
-    );
-    return composer;
-  }
-}
-
-class $$SessionsTableAnnotationComposer
-    extends Composer<_$AppDatabase, $SessionsTable> {
-  $$SessionsTableAnnotationComposer({
-    required super.$db,
-    required super.$table,
-    super.joinBuilder,
-    super.$addJoinBuilderToRootComposer,
-    super.$removeJoinBuilderFromRootComposer,
-  });
-  GeneratedColumn<String> get id =>
-      $composableBuilder(column: $table.id, builder: (column) => column);
-
-  GeneratedColumn<String> get title =>
-      $composableBuilder(column: $table.title, builder: (column) => column);
-
-  GeneratedColumnWithTypeConverter<SessionState, String> get state =>
-      $composableBuilder(column: $table.state, builder: (column) => column);
-
-  GeneratedColumn<int> get startedAtUtc => $composableBuilder(
-    column: $table.startedAtUtc,
-    builder: (column) => column,
-  );
-
-  GeneratedColumn<int> get endedAtUtc => $composableBuilder(
-    column: $table.endedAtUtc,
-    builder: (column) => column,
-  );
-
-  GeneratedColumn<int> get createdAtUtc => $composableBuilder(
-    column: $table.createdAtUtc,
-    builder: (column) => column,
-  );
-
-  GeneratedColumn<int> get updatedAtUtc => $composableBuilder(
-    column: $table.updatedAtUtc,
-    builder: (column) => column,
-  );
-
-  GeneratedColumn<int> get deletedAtUtc => $composableBuilder(
-    column: $table.deletedAtUtc,
-    builder: (column) => column,
-  );
-
-  GeneratedColumn<int> get revision =>
-      $composableBuilder(column: $table.revision, builder: (column) => column);
-
-  $$ProjectsTableAnnotationComposer get projectId {
-    final $$ProjectsTableAnnotationComposer composer = $composerBuilder(
-      composer: this,
-      getCurrentColumn: (t) => t.projectId,
-      referencedTable: $db.projects,
-      getReferencedColumn: (t) => t.id,
-      builder:
-          (
-            joinBuilder, {
-            $addJoinBuilderToRootComposer,
-            $removeJoinBuilderFromRootComposer,
-          }) => $$ProjectsTableAnnotationComposer(
-            $db: $db,
-            $table: $db.projects,
-            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-            joinBuilder: joinBuilder,
-            $removeJoinBuilderFromRootComposer:
-                $removeJoinBuilderFromRootComposer,
-          ),
-    );
-    return composer;
-  }
-
-  Expression<T> notesRefs<T extends Object>(
-    Expression<T> Function($$NotesTableAnnotationComposer a) f,
-  ) {
-    final $$NotesTableAnnotationComposer composer = $composerBuilder(
-      composer: this,
-      getCurrentColumn: (t) => t.id,
-      referencedTable: $db.notes,
-      getReferencedColumn: (t) => t.sessionId,
-      builder:
-          (
-            joinBuilder, {
-            $addJoinBuilderToRootComposer,
-            $removeJoinBuilderFromRootComposer,
-          }) => $$NotesTableAnnotationComposer(
-            $db: $db,
-            $table: $db.notes,
-            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-            joinBuilder: joinBuilder,
-            $removeJoinBuilderFromRootComposer:
-                $removeJoinBuilderFromRootComposer,
-          ),
-    );
-    return f(composer);
-  }
-}
-
-class $$SessionsTableTableManager
-    extends
-        RootTableManager<
-          _$AppDatabase,
-          $SessionsTable,
-          Session,
-          $$SessionsTableFilterComposer,
-          $$SessionsTableOrderingComposer,
-          $$SessionsTableAnnotationComposer,
-          $$SessionsTableCreateCompanionBuilder,
-          $$SessionsTableUpdateCompanionBuilder,
-          (Session, $$SessionsTableReferences),
-          Session,
-          PrefetchHooks Function({bool projectId, bool notesRefs})
-        > {
-  $$SessionsTableTableManager(_$AppDatabase db, $SessionsTable table)
-    : super(
-        TableManagerState(
-          db: db,
-          table: table,
-          createFilteringComposer: () =>
-              $$SessionsTableFilterComposer($db: db, $table: table),
-          createOrderingComposer: () =>
-              $$SessionsTableOrderingComposer($db: db, $table: table),
-          createComputedFieldComposer: () =>
-              $$SessionsTableAnnotationComposer($db: db, $table: table),
-          updateCompanionCallback:
-              ({
-                Value<String> id = const Value.absent(),
-                Value<String> projectId = const Value.absent(),
-                Value<String> title = const Value.absent(),
-                Value<SessionState> state = const Value.absent(),
-                Value<int> startedAtUtc = const Value.absent(),
-                Value<int?> endedAtUtc = const Value.absent(),
-                Value<int> createdAtUtc = const Value.absent(),
-                Value<int> updatedAtUtc = const Value.absent(),
-                Value<int?> deletedAtUtc = const Value.absent(),
-                Value<int> revision = const Value.absent(),
-                Value<int> rowid = const Value.absent(),
-              }) => SessionsCompanion(
-                id: id,
-                projectId: projectId,
-                title: title,
-                state: state,
-                startedAtUtc: startedAtUtc,
-                endedAtUtc: endedAtUtc,
-                createdAtUtc: createdAtUtc,
-                updatedAtUtc: updatedAtUtc,
-                deletedAtUtc: deletedAtUtc,
-                revision: revision,
-                rowid: rowid,
-              ),
-          createCompanionCallback:
-              ({
-                required String id,
-                required String projectId,
-                required String title,
-                Value<SessionState> state = const Value.absent(),
-                required int startedAtUtc,
-                Value<int?> endedAtUtc = const Value.absent(),
-                required int createdAtUtc,
-                required int updatedAtUtc,
-                Value<int?> deletedAtUtc = const Value.absent(),
-                Value<int> revision = const Value.absent(),
-                Value<int> rowid = const Value.absent(),
-              }) => SessionsCompanion.insert(
-                id: id,
-                projectId: projectId,
-                title: title,
-                state: state,
-                startedAtUtc: startedAtUtc,
-                endedAtUtc: endedAtUtc,
-                createdAtUtc: createdAtUtc,
-                updatedAtUtc: updatedAtUtc,
-                deletedAtUtc: deletedAtUtc,
-                revision: revision,
-                rowid: rowid,
-              ),
-          withReferenceMapper: (p0) => p0
-              .map(
-                (e) => (
-                  e.readTable(table),
-                  $$SessionsTableReferences(db, table, e),
-                ),
-              )
-              .toList(),
-          prefetchHooksCallback: ({projectId = false, notesRefs = false}) {
-            return PrefetchHooks(
-              db: db,
-              explicitlyWatchedTables: [if (notesRefs) db.notes],
-              addJoins:
-                  <
-                    T extends TableManagerState<
-                      dynamic,
-                      dynamic,
-                      dynamic,
-                      dynamic,
-                      dynamic,
-                      dynamic,
-                      dynamic,
-                      dynamic,
-                      dynamic,
-                      dynamic,
-                      dynamic
-                    >
-                  >(state) {
-                    if (projectId) {
-                      state =
-                          state.withJoin(
-                                currentTable: table,
-                                currentColumn: table.projectId,
-                                referencedTable: $$SessionsTableReferences
-                                    ._projectIdTable(db),
-                                referencedColumn: $$SessionsTableReferences
-                                    ._projectIdTable(db)
-                                    .id,
-                              )
-                              as T;
-                    }
-
-                    return state;
-                  },
-              getPrefetchedDataCallback: (items) async {
-                return [
-                  if (notesRefs)
-                    await $_getPrefetchedData<Session, $SessionsTable, Note>(
-                      currentTable: table,
-                      referencedTable: $$SessionsTableReferences
-                          ._notesRefsTable(db),
-                      managerFromTypedResult: (p0) =>
-                          $$SessionsTableReferences(db, table, p0).notesRefs,
-                      referencedItemsForCurrentItem: (item, referencedItems) =>
-                          referencedItems.where((e) => e.sessionId == item.id),
-                      typedResults: items,
-                    ),
-                ];
-              },
-            );
-          },
-        ),
-      );
-}
-
-typedef $$SessionsTableProcessedTableManager =
-    ProcessedTableManager<
-      _$AppDatabase,
-      $SessionsTable,
-      Session,
-      $$SessionsTableFilterComposer,
-      $$SessionsTableOrderingComposer,
-      $$SessionsTableAnnotationComposer,
-      $$SessionsTableCreateCompanionBuilder,
-      $$SessionsTableUpdateCompanionBuilder,
-      (Session, $$SessionsTableReferences),
-      Session,
-      PrefetchHooks Function({bool projectId, bool notesRefs})
+      PrefetchHooks Function({bool notesRefs, bool tagsRefs})
     >;
 typedef $$NotesTableCreateCompanionBuilder =
     NotesCompanion Function({
       required String id,
       Value<String?> projectId,
-      Value<String?> sessionId,
       Value<String?> title,
       Value<NoteStatus> status,
       required String documentJson,
@@ -9179,7 +7854,6 @@ typedef $$NotesTableUpdateCompanionBuilder =
     NotesCompanion Function({
       Value<String> id,
       Value<String?> projectId,
-      Value<String?> sessionId,
       Value<String?> title,
       Value<NoteStatus> status,
       Value<String> documentJson,
@@ -9212,23 +7886,6 @@ final class $$NotesTableReferences
       $_db.projects,
     ).filter((f) => f.id.sqlEquals($_column));
     final item = $_typedResult.readTableOrNull(_projectIdTable($_db));
-    if (item == null) return manager;
-    return ProcessedTableManager(
-      manager.$state.copyWith(prefetchedData: [item]),
-    );
-  }
-
-  static $SessionsTable _sessionIdTable(_$AppDatabase db) =>
-      db.sessions.createAlias('notes__session_id__sessions__id');
-
-  $$SessionsTableProcessedTableManager? get sessionId {
-    final $_column = $_itemColumn<String>('session_id');
-    if ($_column == null) return null;
-    final manager = $$SessionsTableTableManager(
-      $_db,
-      $_db.sessions,
-    ).filter((f) => f.id.sqlEquals($_column));
-    final item = $_typedResult.readTableOrNull(_sessionIdTable($_db));
     if (item == null) return manager;
     return ProcessedTableManager(
       manager.$state.copyWith(prefetchedData: [item]),
@@ -9414,29 +8071,6 @@ class $$NotesTableFilterComposer extends Composer<_$AppDatabase, $NotesTable> {
           }) => $$ProjectsTableFilterComposer(
             $db: $db,
             $table: $db.projects,
-            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-            joinBuilder: joinBuilder,
-            $removeJoinBuilderFromRootComposer:
-                $removeJoinBuilderFromRootComposer,
-          ),
-    );
-    return composer;
-  }
-
-  $$SessionsTableFilterComposer get sessionId {
-    final $$SessionsTableFilterComposer composer = $composerBuilder(
-      composer: this,
-      getCurrentColumn: (t) => t.sessionId,
-      referencedTable: $db.sessions,
-      getReferencedColumn: (t) => t.id,
-      builder:
-          (
-            joinBuilder, {
-            $addJoinBuilderToRootComposer,
-            $removeJoinBuilderFromRootComposer,
-          }) => $$SessionsTableFilterComposer(
-            $db: $db,
-            $table: $db.sessions,
             $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
             joinBuilder: joinBuilder,
             $removeJoinBuilderFromRootComposer:
@@ -9653,29 +8287,6 @@ class $$NotesTableOrderingComposer
     );
     return composer;
   }
-
-  $$SessionsTableOrderingComposer get sessionId {
-    final $$SessionsTableOrderingComposer composer = $composerBuilder(
-      composer: this,
-      getCurrentColumn: (t) => t.sessionId,
-      referencedTable: $db.sessions,
-      getReferencedColumn: (t) => t.id,
-      builder:
-          (
-            joinBuilder, {
-            $addJoinBuilderToRootComposer,
-            $removeJoinBuilderFromRootComposer,
-          }) => $$SessionsTableOrderingComposer(
-            $db: $db,
-            $table: $db.sessions,
-            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-            joinBuilder: joinBuilder,
-            $removeJoinBuilderFromRootComposer:
-                $removeJoinBuilderFromRootComposer,
-          ),
-    );
-    return composer;
-  }
 }
 
 class $$NotesTableAnnotationComposer
@@ -9767,29 +8378,6 @@ class $$NotesTableAnnotationComposer
           }) => $$ProjectsTableAnnotationComposer(
             $db: $db,
             $table: $db.projects,
-            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-            joinBuilder: joinBuilder,
-            $removeJoinBuilderFromRootComposer:
-                $removeJoinBuilderFromRootComposer,
-          ),
-    );
-    return composer;
-  }
-
-  $$SessionsTableAnnotationComposer get sessionId {
-    final $$SessionsTableAnnotationComposer composer = $composerBuilder(
-      composer: this,
-      getCurrentColumn: (t) => t.sessionId,
-      referencedTable: $db.sessions,
-      getReferencedColumn: (t) => t.id,
-      builder:
-          (
-            joinBuilder, {
-            $addJoinBuilderToRootComposer,
-            $removeJoinBuilderFromRootComposer,
-          }) => $$SessionsTableAnnotationComposer(
-            $db: $db,
-            $table: $db.sessions,
             $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
             joinBuilder: joinBuilder,
             $removeJoinBuilderFromRootComposer:
@@ -9916,7 +8504,6 @@ class $$NotesTableTableManager
           Note,
           PrefetchHooks Function({
             bool projectId,
-            bool sessionId,
             bool noteTagsRefs,
             bool mediaAssetsRefs,
             bool noteEventsRefs,
@@ -9938,7 +8525,6 @@ class $$NotesTableTableManager
               ({
                 Value<String> id = const Value.absent(),
                 Value<String?> projectId = const Value.absent(),
-                Value<String?> sessionId = const Value.absent(),
                 Value<String?> title = const Value.absent(),
                 Value<NoteStatus> status = const Value.absent(),
                 Value<String> documentJson = const Value.absent(),
@@ -9957,7 +8543,6 @@ class $$NotesTableTableManager
               }) => NotesCompanion(
                 id: id,
                 projectId: projectId,
-                sessionId: sessionId,
                 title: title,
                 status: status,
                 documentJson: documentJson,
@@ -9978,7 +8563,6 @@ class $$NotesTableTableManager
               ({
                 required String id,
                 Value<String?> projectId = const Value.absent(),
-                Value<String?> sessionId = const Value.absent(),
                 Value<String?> title = const Value.absent(),
                 Value<NoteStatus> status = const Value.absent(),
                 required String documentJson,
@@ -9997,7 +8581,6 @@ class $$NotesTableTableManager
               }) => NotesCompanion.insert(
                 id: id,
                 projectId: projectId,
-                sessionId: sessionId,
                 title: title,
                 status: status,
                 documentJson: documentJson,
@@ -10023,7 +8606,6 @@ class $$NotesTableTableManager
           prefetchHooksCallback:
               ({
                 projectId = false,
-                sessionId = false,
                 noteTagsRefs = false,
                 mediaAssetsRefs = false,
                 noteEventsRefs = false,
@@ -10062,19 +8644,6 @@ class $$NotesTableTableManager
                                         ._projectIdTable(db),
                                     referencedColumn: $$NotesTableReferences
                                         ._projectIdTable(db)
-                                        .id,
-                                  )
-                                  as T;
-                        }
-                        if (sessionId) {
-                          state =
-                              state.withJoin(
-                                    currentTable: table,
-                                    currentColumn: table.sessionId,
-                                    referencedTable: $$NotesTableReferences
-                                        ._sessionIdTable(db),
-                                    referencedColumn: $$NotesTableReferences
-                                        ._sessionIdTable(db)
                                         .id,
                                   )
                                   as T;
@@ -10182,7 +8751,6 @@ typedef $$NotesTableProcessedTableManager =
       Note,
       PrefetchHooks Function({
         bool projectId,
-        bool sessionId,
         bool noteTagsRefs,
         bool mediaAssetsRefs,
         bool noteEventsRefs,
@@ -14140,8 +12708,6 @@ class $AppDatabaseManager {
   $AppDatabaseManager(this._db);
   $$ProjectsTableTableManager get projects =>
       $$ProjectsTableTableManager(_db, _db.projects);
-  $$SessionsTableTableManager get sessions =>
-      $$SessionsTableTableManager(_db, _db.sessions);
   $$NotesTableTableManager get notes =>
       $$NotesTableTableManager(_db, _db.notes);
   $$TagsTableTableManager get tags => $$TagsTableTableManager(_db, _db.tags);

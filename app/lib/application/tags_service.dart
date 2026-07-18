@@ -78,6 +78,18 @@ class TagsService {
     return query.watch();
   }
 
+  Stream<List<Tag>> watchAllTags() {
+    final query = db.select(db.tags)
+      ..where((tag) => tag.deletedAtUtc.isNull())
+      ..orderBy([
+        (tag) => OrderingTerm.asc(tag.scope),
+        (tag) => OrderingTerm.asc(tag.projectId),
+        (tag) => OrderingTerm.asc(tag.sortOrder),
+        (tag) => OrderingTerm.asc(tag.normalizedName),
+      ]);
+    return query.watch();
+  }
+
   Stream<List<Tag>> watchNoteTags(String noteId) {
     final join = db.select(db.tags).join(
       [innerJoin(db.noteTags, db.noteTags.tagId.equalsExp(db.tags.id))],
@@ -115,6 +127,72 @@ class TagsService {
           ),
         );
     return id;
+  }
+
+  /// Scope is intentionally immutable. Moving a tag between global/project
+  /// scopes could invalidate existing note-tag links and needs a separate,
+  /// explicit migration use case.
+  Future<void> updateTag(
+    Tag tag, {
+    required String name,
+    required int colorArgb,
+  }) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty || trimmed.length > 60) {
+      throw ArgumentError('tag name must be 1..60 chars');
+    }
+    final normalized = normalizeName(trimmed);
+    final now = clock.nowUtcMillis();
+    await db.transaction(() async {
+      final duplicateQuery = db.select(db.tags)
+        ..where(
+          (row) =>
+              row.id.isNotValue(tag.id) &
+              row.normalizedName.equals(normalized) &
+              row.deletedAtUtc.isNull(),
+        );
+      if (tag.projectId == null) {
+        duplicateQuery.where((row) => row.projectId.isNull());
+      } else {
+        duplicateQuery.where((row) => row.projectId.equals(tag.projectId!));
+      }
+      if (await duplicateQuery.getSingleOrNull() != null) {
+        throw StateError('tag name already exists in this scope');
+      }
+      final changed =
+          await (db.update(db.tags)..where(
+                (row) =>
+                    row.id.equals(tag.id) &
+                    row.revision.equals(tag.revision) &
+                    row.deletedAtUtc.isNull(),
+              ))
+              .write(
+                TagsCompanion(
+                  name: Value(trimmed),
+                  normalizedName: Value(normalized),
+                  colorArgb: Value(colorArgb),
+                  updatedAtUtc: Value(now),
+                  revision: Value(tag.revision + 1),
+                ),
+              );
+      if (changed == 0) {
+        throw StateError('tag was modified concurrently, retry');
+      }
+      await db
+          .into(db.operationJournal)
+          .insert(
+            OperationJournalCompanion.insert(
+              operationId: ids.newId(),
+              deviceId: deviceId,
+              entityKind: 'tag',
+              entityId: tag.id,
+              baseRevision: Value(tag.revision),
+              newRevision: Value(tag.revision + 1),
+              operationKind: 'tag.updated',
+              occurredAtUtc: now,
+            ),
+          );
+    });
   }
 
   /// Назначение тега с проверкой scope: project-тег допустим только на

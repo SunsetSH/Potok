@@ -6,6 +6,7 @@ import '../domain/id_generator.dart';
 import '../domain/types.dart';
 import '../infrastructure/db/database.dart';
 import '../infrastructure/media_store.dart';
+import 'local_title_generator.dart';
 import 'note_list_query.dart';
 import 'tags_service.dart';
 
@@ -18,6 +19,7 @@ class NotesService {
   final Clock clock;
   final IdGenerator ids;
   final String deviceId;
+  final LocalTitleGenerator titleGenerator;
 
   NotesService({
     required this.db,
@@ -25,6 +27,7 @@ class NotesService {
     required this.clock,
     required this.ids,
     required this.deviceId,
+    this.titleGenerator = const LocalTitleGenerator(),
   });
 
   // ---------- Queries ----------
@@ -185,11 +188,12 @@ GROUP BY project_id
 
   /// Lightweight invalidation stream. Drift re-runs it after every Notes
   /// table mutation without materializing note rows.
-  Stream<void> watchChanges() {
-    return db
-        .customSelect('SELECT 1', readsFrom: {db.notes})
-        .watch()
-        .map((_) {});
+  Stream<int> watchChanges() async* {
+    var revision = 0;
+    await for (final _
+        in db.customSelect('SELECT 1', readsFrom: {db.notes}).watch()) {
+      yield revision++;
+    }
   }
 
   JoinedSelectStatement<HasResultSet, dynamic> _createNotesQuery({
@@ -442,21 +446,25 @@ GROUP BY project_id
   }
 
   Stream<List<TrashedAudioItem>> watchTrashedAudio() {
-    final query = db.select(db.mediaAssets).join([
-      innerJoin(db.notes, db.notes.id.equalsExp(db.mediaAssets.ownerNoteId)),
-    ])
-      ..where(
-        db.mediaAssets.kind.equalsValue(AssetKind.audio) &
-            db.mediaAssets.deletedAtUtc.isNotNull() &
-            db.mediaAssets.lifecycleState.isInValues([
-              AssetLifecycle.ready,
-              AssetLifecycle.missing,
-            ]),
-      )
-      ..orderBy([
-        OrderingTerm.desc(db.mediaAssets.deletedAtUtc),
-        OrderingTerm.desc(db.mediaAssets.id),
-      ]);
+    final query =
+        db.select(db.mediaAssets).join([
+            innerJoin(
+              db.notes,
+              db.notes.id.equalsExp(db.mediaAssets.ownerNoteId),
+            ),
+          ])
+          ..where(
+            db.mediaAssets.kind.equalsValue(AssetKind.audio) &
+                db.mediaAssets.deletedAtUtc.isNotNull() &
+                db.mediaAssets.lifecycleState.isInValues([
+                  AssetLifecycle.ready,
+                  AssetLifecycle.missing,
+                ]),
+          )
+          ..orderBy([
+            OrderingTerm.desc(db.mediaAssets.deletedAtUtc),
+            OrderingTerm.desc(db.mediaAssets.id),
+          ]);
     return query.watch().map(
       (rows) => rows
           .map(
@@ -512,7 +520,7 @@ GROUP BY project_id
   Future<String> createTextNote(
     String text, {
     String? projectId,
-    String? sessionId,
+    SourceKind sourceKind = SourceKind.keyboard,
   }) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty) {
@@ -522,32 +530,16 @@ GROUP BY project_id
     final id = ids.newId();
     final now = clock.nowUtcMillis();
     await db.transaction(() async {
-      var resolvedProjectId = projectId;
-      if (sessionId != null) {
-        final session =
-            await (db.select(db.sessions)..where(
-                  (row) =>
-                      row.id.equals(sessionId) &
-                      row.deletedAtUtc.isNull() &
-                      row.state.equalsValue(SessionState.active),
-                ))
-                .getSingleOrNull();
-        if (session == null) throw StateError('session is not active');
-        if (projectId != null && projectId != session.projectId) {
-          throw StateError('note project does not match session project');
-        }
-        resolvedProjectId = session.projectId;
-      }
       await db
           .into(db.notes)
           .insert(
             NotesCompanion.insert(
               id: id,
-              projectId: Value(resolvedProjectId),
-              sessionId: Value(sessionId),
+              title: Value(titleGenerator.suggest(document.plainText)),
+              projectId: Value(projectId),
               documentJson: document.encode(),
               documentPlainText: document.plainText,
-              sourceKind: SourceKind.keyboard,
+              sourceKind: sourceKind,
               createdAtUtc: now,
               updatedAtUtc: now,
             ),
@@ -555,7 +547,7 @@ GROUP BY project_id
       await _appendEvent(
         id,
         NoteEventKind.created,
-        projectId: resolvedProjectId,
+        projectId: projectId,
         at: now,
       );
       await _journal(
@@ -569,13 +561,146 @@ GROUP BY project_id
     return id;
   }
 
+  static const _imageDraftTitle = '__potok_image_draft__';
+
+  /// Durable owner for managed images selected before quick capture is
+  /// published. The same hidden-row protocol is used by audio staging.
+  Future<Note> beginImageNoteDraft({
+    String? projectId,
+    SourceKind sourceKind = SourceKind.keyboard,
+  }) async {
+    final id = ids.newId();
+    final now = clock.nowUtcMillis();
+    await db
+        .into(db.notes)
+        .insert(
+          NotesCompanion.insert(
+            id: id,
+            title: const Value(_imageDraftTitle),
+            projectId: Value(projectId),
+            documentJson: const PotokDocument.empty().encode(),
+            documentPlainText: '',
+            sourceKind: sourceKind,
+            createdAtUtc: now,
+            updatedAtUtc: now,
+            deletedAtUtc: Value(now),
+          ),
+        );
+    return (db.select(db.notes)..where((n) => n.id.equals(id))).getSingle();
+  }
+
+  Future<Note?> findImageNoteDraft() {
+    final query = db.select(db.notes)
+      ..where(
+        (n) => n.title.equals(_imageDraftTitle) & n.deletedAtUtc.isNotNull(),
+      )
+      ..orderBy([(n) => OrderingTerm.desc(n.updatedAtUtc)])
+      ..limit(1);
+    return query.getSingleOrNull();
+  }
+
+  Future<void> updateImageNoteDraft(
+    Note draft,
+    PotokDocument document, {
+    String? projectId,
+  }) async {
+    final now = clock.nowUtcMillis();
+    final updated =
+        await (db.update(db.notes)..where(
+              (n) =>
+                  n.id.equals(draft.id) &
+                  n.revision.equals(draft.revision) &
+                  n.title.equals(_imageDraftTitle),
+            ))
+            .write(
+              NotesCompanion(
+                projectId: Value(projectId),
+                documentJson: Value(document.encode()),
+                documentPlainText: Value(document.plainText),
+                updatedAtUtc: Value(now),
+                revision: Value(draft.revision + 1),
+              ),
+            );
+    if (updated == 0) throw StateError('image draft was modified');
+  }
+
+  Future<void> publishImageNoteDraft(
+    Note draft,
+    PotokDocument document, {
+    String? projectId,
+  }) async {
+    if (document.plainText.isEmpty && document.managedAssetIds.isEmpty) {
+      throw ArgumentError('image draft must contain text or image');
+    }
+    final assetIds = document.managedAssetIds;
+    if (assetIds.isNotEmpty) {
+      final readyAssets =
+          await (db.select(db.mediaAssets)..where(
+                (asset) =>
+                    asset.id.isIn(assetIds) &
+                    asset.ownerNoteId.equals(draft.id) &
+                    asset.kind.equalsValue(AssetKind.image) &
+                    asset.lifecycleState.equalsValue(AssetLifecycle.ready) &
+                    asset.deletedAtUtc.isNull(),
+              ))
+              .get();
+      if (readyAssets.length != assetIds.length) {
+        throw StateError('image draft contains unavailable assets');
+      }
+    }
+    final now = clock.nowUtcMillis();
+    await db.transaction(() async {
+      final updated =
+          await (db.update(db.notes)..where(
+                (n) =>
+                    n.id.equals(draft.id) &
+                    n.revision.equals(draft.revision) &
+                    n.title.equals(_imageDraftTitle),
+              ))
+              .write(
+                NotesCompanion(
+                  title: Value(
+                    titleGenerator.suggest(document.plainText) ?? 'Изображение',
+                  ),
+                  projectId: Value(projectId),
+                  documentJson: Value(document.encode()),
+                  documentPlainText: Value(document.plainText),
+                  deletedAtUtc: const Value(null),
+                  updatedAtUtc: Value(now),
+                  revision: Value(draft.revision + 1),
+                ),
+              );
+      if (updated == 0) throw StateError('image draft was modified');
+      await _appendEvent(
+        draft.id,
+        NoteEventKind.created,
+        projectId: projectId,
+        at: now,
+      );
+      await _journal(
+        entityId: draft.id,
+        operationKind: 'note.create',
+        baseRevision: draft.revision,
+        newRevision: draft.revision + 1,
+        at: now,
+      );
+    });
+  }
+
+  Future<void> discardImageNoteDraft(Note draft) async {
+    await (db.delete(db.notes)..where(
+          (n) => n.id.equals(draft.id) & n.title.equals(_imageDraftTitle),
+        ))
+        .go();
+  }
+
   /// Регистрирует staged-запись и возвращает путь для рекордера. Строки в БД
   /// создаются в `staging` до появления байтов; заметка скрыта из списков
   /// до финализации.
   Future<StagedRecording> beginAudioNote({
     required String extension,
     String? projectId,
-    String? sessionId,
+    SourceKind sourceKind = SourceKind.audio,
   }) async {
     final noteId = ids.newId();
     final assetId = ids.newId();
@@ -584,32 +709,15 @@ GROUP BY project_id
     final now = clock.nowUtcMillis();
     try {
       await db.transaction(() async {
-        var resolvedProjectId = projectId;
-        if (sessionId != null) {
-          final session =
-              await (db.select(db.sessions)..where(
-                    (row) =>
-                        row.id.equals(sessionId) &
-                        row.deletedAtUtc.isNull() &
-                        row.state.equalsValue(SessionState.active),
-                  ))
-                  .getSingleOrNull();
-          if (session == null) throw StateError('session is not active');
-          if (projectId != null && projectId != session.projectId) {
-            throw StateError('note project does not match session project');
-          }
-          resolvedProjectId = session.projectId;
-        }
         await db
             .into(db.notes)
             .insert(
               NotesCompanion.insert(
                 id: noteId,
-                projectId: Value(resolvedProjectId),
-                sessionId: Value(sessionId),
+                projectId: Value(projectId),
                 documentJson: const PotokDocument.empty().encode(),
                 documentPlainText: '',
-                sourceKind: SourceKind.audio,
+                sourceKind: sourceKind,
                 createdAtUtc: now,
                 updatedAtUtc: now,
                 deletedAtUtc: Value(now),
@@ -653,15 +761,18 @@ GROUP BY project_id
     await media.prepareStaging(relativePath);
     final now = clock.nowUtcMillis();
     try {
-      final current = await (db.select(db.notes)..where(
-            (row) =>
-                row.id.equals(note.id) &
-                row.revision.equals(note.revision) &
-                row.deletedAtUtc.isNull(),
-          ))
-          .getSingleOrNull();
+      final current =
+          await (db.select(db.notes)..where(
+                (row) =>
+                    row.id.equals(note.id) &
+                    row.revision.equals(note.revision) &
+                    row.deletedAtUtc.isNull(),
+              ))
+              .getSingleOrNull();
       if (current == null) throw StateError('note changed or unavailable');
-      await db.into(db.mediaAssets).insert(
+      await db
+          .into(db.mediaAssets)
+          .insert(
             MediaAssetsCompanion.insert(
               id: assetId,
               ownerNoteId: note.id,
@@ -713,6 +824,7 @@ GROUP BY project_id
           db.notes,
         )..where((n) => n.id.equals(staged.noteId))).write(
           NotesCompanion(
+            title: Value(titleGenerator.suggest(document.plainText)),
             documentJson: Value(document.encode()),
             documentPlainText: Value(document.plainText),
             updatedAtUtc: Value(now),
@@ -818,18 +930,19 @@ GROUP BY project_id
         if (baseRevision == null) {
           throw StateError('audio attachment has no base revision');
         }
-        final changed = await (db.update(db.notes)..where(
-              (row) =>
-                  row.id.equals(staged.noteId) &
-                  row.revision.equals(baseRevision) &
-                  row.deletedAtUtc.isNull(),
-            ))
-            .write(
-              NotesCompanion(
-                updatedAtUtc: Value(now),
-                revision: Value(baseRevision + 1),
-              ),
-            );
+        final changed =
+            await (db.update(db.notes)..where(
+                  (row) =>
+                      row.id.equals(staged.noteId) &
+                      row.revision.equals(baseRevision) &
+                      row.deletedAtUtc.isNull(),
+                ))
+                .write(
+                  NotesCompanion(
+                    updatedAtUtc: Value(now),
+                    revision: Value(baseRevision + 1),
+                  ),
+                );
         if (changed == 0) throw StateError('note changed during recording');
         await _appendEvent(
           staged.noteId,
@@ -854,27 +967,28 @@ GROUP BY project_id
     }
     final now = clock.nowUtcMillis();
     await db.transaction(() async {
-      final changed = await (db.update(db.mediaAssets)..where(
-            (row) =>
-                row.id.equals(asset.id) & row.deletedAtUtc.isNull(),
-          ))
-          .write(
-            MediaAssetsCompanion(
-              deletedAtUtc: Value(now),
-              updatedAtUtc: Value(now),
-            ),
-          );
+      final changed =
+          await (db.update(db.mediaAssets)..where(
+                (row) => row.id.equals(asset.id) & row.deletedAtUtc.isNull(),
+              ))
+              .write(
+                MediaAssetsCompanion(
+                  deletedAtUtc: Value(now),
+                  updatedAtUtc: Value(now),
+                ),
+              );
       if (changed == 0) throw StateError('audio already removed');
-      final noteChanged = await (db.update(db.notes)..where(
-            (row) =>
-                row.id.equals(note.id) & row.revision.equals(note.revision),
-          ))
-          .write(
-            NotesCompanion(
-              updatedAtUtc: Value(now),
-              revision: Value(note.revision + 1),
-            ),
-          );
+      final noteChanged =
+          await (db.update(db.notes)..where(
+                (row) =>
+                    row.id.equals(note.id) & row.revision.equals(note.revision),
+              ))
+              .write(
+                NotesCompanion(
+                  updatedAtUtc: Value(now),
+                  revision: Value(note.revision + 1),
+                ),
+              );
       if (noteChanged == 0) throw StateError('note changed concurrently');
       await _appendEvent(
         note.id,
@@ -900,15 +1014,16 @@ GROUP BY project_id
     }
     final now = clock.nowUtcMillis();
     await db.transaction(() async {
-      final restored = await (db.update(db.mediaAssets)..where(
-            (row) => row.id.equals(asset.id) & row.deletedAtUtc.isNotNull(),
-          ))
-          .write(
-            MediaAssetsCompanion(
-              deletedAtUtc: const Value(null),
-              updatedAtUtc: Value(now),
-            ),
-          );
+      final restored =
+          await (db.update(db.mediaAssets)..where(
+                (row) => row.id.equals(asset.id) & row.deletedAtUtc.isNotNull(),
+              ))
+              .write(
+                MediaAssetsCompanion(
+                  deletedAtUtc: const Value(null),
+                  updatedAtUtc: Value(now),
+                ),
+              );
       if (restored == 0) throw StateError('audio already restored');
       await _touchNoteForAudioLifecycle(
         note,
@@ -926,24 +1041,23 @@ GROUP BY project_id
     }
     final now = clock.nowUtcMillis();
     await db.transaction(() async {
-      await (db.delete(db.transcriptRevisions)..where(
-            (row) => row.audioAssetId.equals(asset.id),
-          ))
-          .go();
+      await (db.delete(
+        db.transcriptRevisions,
+      )..where((row) => row.audioAssetId.equals(asset.id))).go();
       await (db.delete(
         db.audioRecordings,
       )..where((row) => row.assetId.equals(asset.id))).go();
-      final tombstoned = await (db.update(db.mediaAssets)..where(
-            (row) =>
-                row.id.equals(asset.id) & row.deletedAtUtc.isNotNull(),
-          ))
-          .write(
-            MediaAssetsCompanion(
-              lifecycleState: const Value(AssetLifecycle.deleted),
-              sizeBytes: const Value(0),
-              updatedAtUtc: Value(now),
-            ),
-          );
+      final tombstoned =
+          await (db.update(db.mediaAssets)..where(
+                (row) => row.id.equals(asset.id) & row.deletedAtUtc.isNotNull(),
+              ))
+              .write(
+                MediaAssetsCompanion(
+                  lifecycleState: const Value(AssetLifecycle.deleted),
+                  sizeBytes: const Value(0),
+                  updatedAtUtc: Value(now),
+                ),
+              );
       if (tombstoned == 0) throw StateError('audio already purged');
       await _touchNoteForAudioLifecycle(
         note,
@@ -959,15 +1073,17 @@ GROUP BY project_id
     required int at,
     required String operationKind,
   }) async {
-    final changed = await (db.update(db.notes)..where(
-          (row) => row.id.equals(note.id) & row.revision.equals(note.revision),
-        ))
-        .write(
-          NotesCompanion(
-            updatedAtUtc: Value(at),
-            revision: Value(note.revision + 1),
-          ),
-        );
+    final changed =
+        await (db.update(db.notes)..where(
+              (row) =>
+                  row.id.equals(note.id) & row.revision.equals(note.revision),
+            ))
+            .write(
+              NotesCompanion(
+                updatedAtUtc: Value(at),
+                revision: Value(note.revision + 1),
+              ),
+            );
     if (changed == 0) throw StateError('note changed concurrently');
     await _appendEvent(
       note.id,
@@ -1026,6 +1142,13 @@ GROUP BY project_id
               ))
               .write(
                 NotesCompanion(
+                  title:
+                      note.title == null ||
+                          note.title!.trim().isEmpty ||
+                          note.title ==
+                              titleGenerator.suggest(note.documentPlainText)
+                      ? Value(titleGenerator.suggest(document.plainText))
+                      : const Value.absent(),
                   documentJson: Value(document.encode()),
                   documentPlainText: Value(document.plainText),
                   updatedAtUtc: Value(now),
@@ -1047,6 +1170,86 @@ GROUP BY project_id
       await _journal(
         entityId: noteId,
         operationKind: 'note.accept_transcript',
+        baseRevision: note.revision,
+        newRevision: note.revision + 1,
+        at: now,
+      );
+    });
+  }
+
+  /// Explicit user title. Empty means "return to automatic title".
+  Future<void> updateTitle(Note note, String value) async {
+    final normalized = value.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (normalized.length > 120) {
+      throw ArgumentError.value(value, 'value', 'title is too long');
+    }
+    final next = normalized.isEmpty
+        ? titleGenerator.suggest(note.documentPlainText)
+        : normalized;
+    final now = clock.nowUtcMillis();
+    await db.transaction(() async {
+      final changed =
+          await (db.update(db.notes)..where(
+                (row) =>
+                    row.id.equals(note.id) & row.revision.equals(note.revision),
+              ))
+              .write(
+                NotesCompanion(
+                  title: Value(next),
+                  updatedAtUtc: Value(now),
+                  revision: Value(note.revision + 1),
+                ),
+              );
+      if (changed == 0) throw StateError('note changed concurrently');
+      await _appendEvent(
+        note.id,
+        NoteEventKind.edited,
+        projectId: note.projectId,
+        at: now,
+      );
+      await _journal(
+        entityId: note.id,
+        operationKind: 'note.update_title',
+        baseRevision: note.revision,
+        newRevision: note.revision + 1,
+        at: now,
+      );
+    });
+  }
+
+  /// ASR may suggest a title without accepting transcript into the document.
+  /// A non-empty existing title is never overwritten.
+  Future<void> suggestTitleFromTranscript(String noteId, String text) async {
+    final suggestion = titleGenerator.suggest(text);
+    if (suggestion == null) return;
+    final now = clock.nowUtcMillis();
+    await db.transaction(() async {
+      final note = await (db.select(
+        db.notes,
+      )..where((row) => row.id.equals(noteId))).getSingleOrNull();
+      if (note == null || (note.title?.trim().isNotEmpty ?? false)) return;
+      final changed =
+          await (db.update(db.notes)..where(
+                (row) =>
+                    row.id.equals(noteId) & row.revision.equals(note.revision),
+              ))
+              .write(
+                NotesCompanion(
+                  title: Value(suggestion),
+                  updatedAtUtc: Value(now),
+                  revision: Value(note.revision + 1),
+                ),
+              );
+      if (changed == 0) return;
+      await _appendEvent(
+        noteId,
+        NoteEventKind.edited,
+        projectId: note.projectId,
+        at: now,
+      );
+      await _journal(
+        entityId: noteId,
+        operationKind: 'note.suggest_title',
         baseRevision: note.revision,
         newRevision: note.revision + 1,
         at: now,
@@ -1106,6 +1309,13 @@ GROUP BY project_id
               ))
               .write(
                 NotesCompanion(
+                  title:
+                      note.title == null ||
+                          note.title!.trim().isEmpty ||
+                          note.title ==
+                              titleGenerator.suggest(note.documentPlainText)
+                      ? Value(titleGenerator.suggest(document.plainText))
+                      : const Value.absent(),
                   documentJson: Value(document.encode()),
                   documentPlainText: Value(document.plainText),
                   updatedAtUtc: Value(now),

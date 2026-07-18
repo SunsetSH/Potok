@@ -98,6 +98,7 @@ void main() {
       await service.createTextNote('  привет  ');
       final notes = await service.watchNotes().first;
       expect(notes, hasLength(1));
+      expect(notes.single.title, 'привет');
       expect(notes.single.documentPlainText, 'привет');
       expect(notes.single.status, NoteStatus.inWork);
       expect(
@@ -109,6 +110,44 @@ void main() {
     test('rejects empty text', () async {
       expect(() => service.createTextNote('   '), throwsArgumentError);
     });
+
+    test(
+      'automatic title follows edits until the user names the note',
+      () async {
+        await service.createTextNote('First automatic title');
+        var note = (await service.watchNotes().first).single;
+
+        await service.updateDocument(
+          note,
+          PotokDocument.fromPlainText('Second automatic title'),
+        );
+        note = (await service.watchNotes().first).single;
+        expect(note.title, 'Second automatic title');
+
+        await service.updateTitle(note, 'My fixed title');
+        note = (await service.watchNotes().first).single;
+        await service.updateDocument(
+          note,
+          PotokDocument.fromPlainText('Third document text'),
+        );
+        note = (await service.watchNotes().first).single;
+        expect(note.title, 'My fixed title');
+      },
+    );
+
+    test(
+      'change stream emits distinct revisions for consecutive writes',
+      () async {
+        final expectation = expectLater(
+          service.watchChanges().take(3),
+          emitsInOrder([0, 1, 2]),
+        );
+        await Future<void>.delayed(Duration.zero);
+        await service.createTextNote('one');
+        await service.createTextNote('two');
+        await expectation;
+      },
+    );
 
     test('toggleDone flips status with optimistic revision bump', () async {
       await service.createTextNote('x');
@@ -190,41 +229,40 @@ void main() {
       expect(File(staged.stagingPath).existsSync(), isFalse);
     });
 
-    test('existing note accepts multiple independent audio attachments',
-        () async {
-      await service.createTextNote('основной текст');
-      var note = (await service.watchNotes().first).single;
+    test(
+      'existing note accepts multiple independent audio attachments',
+      () async {
+        await service.createTextNote('основной текст');
+        var note = (await service.watchNotes().first).single;
 
-      for (var index = 0; index < 2; index++) {
-        final staged = await service.beginAudioAttachment(
-          note,
-          extension: 'wav',
-        );
-        await File(staged.stagingPath).writeAsBytes(_validWavBytes);
-        await service.finishAudioNote(
-          staged,
-          duration: Duration(seconds: index + 1),
-          codec: 'pcm16-wav',
-          sampleRateHz: 16000,
-          channels: 1,
-        );
-        note = (await service.watchNotes().first).single;
-      }
+        for (var index = 0; index < 2; index++) {
+          final staged = await service.beginAudioAttachment(
+            note,
+            extension: 'wav',
+          );
+          await File(staged.stagingPath).writeAsBytes(_validWavBytes);
+          await service.finishAudioNote(
+            staged,
+            duration: Duration(seconds: index + 1),
+            codec: 'pcm16-wav',
+            sampleRateHz: 16000,
+            channels: 1,
+          );
+          note = (await service.watchNotes().first).single;
+        }
 
-      final assets = await service.watchAudioAssets(note.id).first;
-      expect(assets, hasLength(2));
-      expect(assets.map((asset) => asset.sha256), everyElement(isNotNull));
-      expect(note.documentPlainText, 'основной текст');
-      expect(note.revision, 3);
-    });
+        final assets = await service.watchAudioAssets(note.id).first;
+        expect(assets, hasLength(2));
+        expect(assets.map((asset) => asset.sha256), everyElement(isNotNull));
+        expect(note.documentPlainText, 'основной текст');
+        expect(note.revision, 3);
+      },
+    );
 
     test('audio deletion is soft until explicit purge', () async {
       await service.createTextNote('заметка');
       var note = (await service.watchNotes().first).single;
-      final staged = await service.beginAudioAttachment(
-        note,
-        extension: 'wav',
-      );
+      final staged = await service.beginAudioAttachment(note, extension: 'wav');
       await File(staged.stagingPath).writeAsBytes(_validWavBytes);
       await service.finishAudioNote(
         staged,
@@ -235,7 +273,9 @@ void main() {
       );
       note = (await service.watchNotes().first).single;
       var asset = (await service.watchAudioAssets(note.id).first).single;
-      final finalFile = File(temp.path + Platform.pathSeparator + asset.relativePath);
+      final finalFile = File(
+        temp.path + Platform.pathSeparator + asset.relativePath,
+      );
       expect(finalFile.existsSync(), isTrue);
 
       await service.moveAudioToTrash(note, asset);
