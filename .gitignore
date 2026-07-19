@@ -38,7 +38,7 @@ app/android/app/release/
 *.keystore
 *.jks
 
-# --- ASR-модели: скачиваются скриптом, не хранятся в Git ---
-# Материализуются через app/tool/prepare_default_asr_model.ps1
-app/assets/models/default/*.onnx
-app/assets/models/default/*tokens.txt
+# --- ASR-модели: скачиваются в приложении с GitHub Releases, не хранятся в Git ---
+# Локальные исходники моделей для загрузки в Release (веса, манифесты) —
+# слишком большие для обычного git-дерева.
+/onnx models/

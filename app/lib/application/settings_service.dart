@@ -40,6 +40,10 @@ class SettingsService {
         );
   }
 
+  Future<void> remove(String key) {
+    return (db.delete(db.appMeta)..where((m) => m.key.equals(key))).go();
+  }
+
   Stream<String?> watch(String key) {
     return (db.select(db.appMeta)..where((m) => m.key.equals(key)))
         .watchSingleOrNull()

@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 /// Adapter contract for local ASR engines (ТЗ 0.8.2, ADR-002).
 /// Implementations must work fully offline and never own a network client.
 abstract interface class LocalSpeechRecognizer {
@@ -7,6 +9,15 @@ abstract interface class LocalSpeechRecognizer {
   /// tag ('ru', 'en') or empty for auto/multilingual.
   Future<TranscriptionResult> transcribeFile(
     String audioPath, {
+    String languageHint = '',
+  });
+
+  /// Decodes one completed PCM16 chunk for the capture live preview. The
+  /// final durable transcription still goes through [transcribeFile] over
+  /// the whole recording.
+  Future<TranscriptionResult> transcribeSamples(
+    Float32List samples, {
+    int sampleRate = 16000,
     String languageHint = '',
   });
 }

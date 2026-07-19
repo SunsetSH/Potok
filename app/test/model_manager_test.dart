@@ -1,13 +1,12 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:drift/native.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:potok/application/settings_service.dart';
-import 'package:potok/infrastructure/asr/bundled_model_installer.dart';
 import 'package:potok/infrastructure/asr/model_manager.dart';
 import 'package:potok/infrastructure/db/database.dart';
 
@@ -174,6 +173,173 @@ void main() {
         );
       },
     );
+
+    test(
+      'descends into a single nested folder left by tar/zip extraction',
+      () async {
+        final nested = Directory(
+          p.join(source.path, 'sherpa-onnx-whisper-base'),
+        )..createSync();
+        await File(
+          p.join(nested.path, 'base-encoder.onnx'),
+        ).writeAsString('encoder-fp32');
+        await File(
+          p.join(nested.path, 'base-decoder.onnx'),
+        ).writeAsString('decoder-fp32');
+        await File(
+          p.join(nested.path, 'base-tokens.txt'),
+        ).writeAsString('tokens');
+
+        final id = await manager.installWhisperDirectory(source.path);
+        final installed = await manager.installedManifest(id);
+
+        expect(installed, isNotNull);
+        expect(installed!.files.keys, {
+          'base-encoder.onnx',
+          'base-decoder.onnx',
+          'base-tokens.txt',
+        });
+      },
+    );
+
+    test(
+      'descends into the matching nested folder even with unrelated siblings',
+      () async {
+        Directory(p.join(source.path, 'empty-sibling')).createSync();
+        final nested = Directory(
+          p.join(source.path, 'sherpa-onnx-whisper-base'),
+        )..createSync();
+        await File(
+          p.join(nested.path, 'base-encoder.int8.onnx'),
+        ).writeAsString('encoder-int8');
+        await File(
+          p.join(nested.path, 'base-decoder.int8.onnx'),
+        ).writeAsString('decoder-int8');
+        await File(
+          p.join(nested.path, 'base-tokens.txt'),
+        ).writeAsString('tokens');
+
+        final id = await manager.installWhisperDirectory(source.path);
+        final installed = await manager.installedManifest(id);
+
+        expect(installed, isNotNull);
+        expect(installed!.files.keys, {
+          'base-encoder.int8.onnx',
+          'base-decoder.int8.onnx',
+          'base-tokens.txt',
+        });
+      },
+    );
+
+    test(
+      'ambiguous nested folders with model files are reported by name',
+      () async {
+        for (final name in ['base', 'small']) {
+          final dir = Directory(p.join(source.path, name))..createSync();
+          await File(
+            p.join(dir.path, '$name-encoder.onnx'),
+          ).writeAsString('encoder');
+        }
+
+        await expectLater(
+          manager.installWhisperDirectory(source.path),
+          throwsA(
+            isA<ModelPackException>()
+                .having((e) => e.message, 'message', contains('base'))
+                .having((e) => e.message, 'message', contains('small')),
+          ),
+        );
+      },
+    );
+
+    test(
+      'error message lists the actual directory contents for diagnosis',
+      () async {
+        await File(
+          p.join(source.path, 'notes.txt'),
+        ).writeAsString('not a model');
+
+        await expectLater(
+          manager.installWhisperDirectory(source.path),
+          throwsA(
+            isA<ModelPackException>().having(
+              (e) => e.message,
+              'message',
+              contains('notes.txt'),
+            ),
+          ),
+        );
+      },
+    );
+
+    test('picks up external-data companion files next to the graph', () async {
+      await File(
+        p.join(source.path, 'small-encoder.onnx'),
+      ).writeAsString('encoder-graph');
+      await File(
+        p.join(source.path, 'small-encoder.onnx.data'),
+      ).writeAsString('encoder-weights');
+      await File(
+        p.join(source.path, 'small-decoder.onnx'),
+      ).writeAsString('decoder-graph');
+      await File(
+        p.join(source.path, 'small-tokens.txt'),
+      ).writeAsString('tokens');
+
+      final id = await manager.installWhisperDirectory(source.path);
+      final installed = await manager.installedManifest(id);
+
+      expect(installed, isNotNull);
+      expect(installed!.files.keys, {
+        'small-encoder.onnx',
+        'small-encoder.onnx.data',
+        'small-decoder.onnx',
+        'small-tokens.txt',
+      });
+    });
+
+    test('detects a NeMo-transducer pack (GigaAM/Parakeet) by joiner.onnx '
+        'and installs it as nemo_transducer', () async {
+      await File(
+        p.join(source.path, 'encoder.int8.onnx'),
+      ).writeAsString('encoder');
+      await File(p.join(source.path, 'decoder.onnx')).writeAsString('decoder');
+      await File(p.join(source.path, 'joiner.onnx')).writeAsString('joiner');
+      await File(p.join(source.path, 'tokens.txt')).writeAsString('tokens');
+
+      final id = await manager.installWhisperDirectory(source.path);
+      final installed = await manager.installedManifest(id);
+
+      expect(installed, isNotNull);
+      expect(installed!.modelType, 'nemo_transducer');
+      expect(installed.files.keys, {
+        'encoder.int8.onnx',
+        'decoder.onnx',
+        'joiner.onnx',
+        'tokens.txt',
+      });
+
+      // activate() должен принимать nemo_transducer, а не только whisper.
+      await manager.activate(id);
+      expect(await manager.activeModel(), id);
+    });
+
+    test('missing encoder lists what was actually found', () async {
+      await File(
+        p.join(source.path, 'unrelated-decoder.onnx'),
+      ).writeAsString('decoder-fp32');
+
+      await expectLater(
+        manager.installWhisperDirectory(source.path),
+        throwsA(
+          isA<ModelPackException>().having(
+            (e) => e.message,
+            'message',
+            contains('unrelated-decoder.onnx'),
+          ),
+        ),
+      );
+    });
   });
 
   group('activate / activeModelDir', () {
@@ -225,46 +391,133 @@ void main() {
     });
   });
 
-  group('bundled model bootstrap', () {
-    test('installs, verifies and activates the packaged model', () async {
-      await writePack(
-        modelId: BundledModelInstaller.modelId,
-        contents: const {
-          'tiny-encoder.int8.onnx': 'encoder-bytes',
-          'tiny-decoder.int8.onnx': 'decoder-bytes',
-          'tiny-tokens.txt': 'token-bytes',
-        },
-      );
-      final files = <String, Uint8List>{};
-      for (final name in [
-        AsrModelManager.manifestFileName,
-        'tiny-encoder.int8.onnx',
-        'tiny-decoder.int8.onnx',
-        'tiny-tokens.txt',
-      ]) {
-        files['assets/models/default/$name'] = await File(
-          p.join(source.path, name),
-        ).readAsBytes();
-      }
+  group('deleteModel', () {
+    test('removes the pack from disk', () async {
+      await writePack();
+      final id = await manager.installFromDirectory(source.path);
+      expect(Directory(p.join(modelsRoot.path, id)).existsSync(), isTrue);
 
-      await BundledModelInstaller(
-        assets: _MapAssetBundle(files),
-      ).ensureInstalled(manager);
+      await manager.deleteModel(id);
 
-      expect(await manager.activeModel(), BundledModelInstaller.modelId);
-      expect(await manager.activeModelDir(), isNotNull);
+      expect(Directory(p.join(modelsRoot.path, id)).existsSync(), isFalse);
+      expect(await manager.installedManifest(id), isNull);
     });
 
-    test('does not replace an already selected valid model', () async {
-      await writePack(modelId: 'user-model');
-      await manager.installFromDirectory(source.path);
-      await manager.activate('user-model');
-      final assets = _MapAssetBundle(const {});
+    test('clears the active-model selection when deleting it', () async {
+      await writePack();
+      final id = await manager.installFromDirectory(source.path);
+      await manager.activate(id);
+      expect(await manager.activeModel(), id);
 
-      await BundledModelInstaller(assets: assets).ensureInstalled(manager);
+      await manager.deleteModel(id);
 
-      expect(await manager.activeModel(), 'user-model');
-      expect(assets.loads, 0);
+      expect(await manager.activeModel(), isNull);
+      expect(await manager.activeModelDir(), isNull);
+    });
+
+    test('deleting an uninstalled model_id is a no-op', () async {
+      await manager.deleteModel('never-installed');
+    });
+
+    test('rejects an unsafe model_id without touching the disk', () async {
+      await expectLater(
+        manager.deleteModel('../escape'),
+        throwsA(isA<ModelPackException>()),
+      );
+    });
+  });
+
+  group('downloadAndInstall', () {
+    late HttpServer server;
+    late String baseUrl;
+    late Map<String, String> filePayloads;
+    late Map<String, String> manifestHashes;
+
+    setUp(() async {
+      filePayloads = {
+        'encoder.int8.onnx': 'encoder-bytes',
+        'decoder.onnx': 'decoder-bytes',
+        'joiner.onnx': 'joiner-bytes',
+        'tokens.txt': 'tokens-bytes',
+      };
+      // Хэши в манифесте фиксируются один раз здесь — тест "hash mismatch"
+      // потом меняет `filePayloads` для отдачи файлов, не трогая эту карту,
+      // чтобы получить настоящее расхождение, а не самосогласованную пару.
+      manifestHashes = {
+        for (final entry in filePayloads.entries)
+          entry.key: sha256.convert(utf8.encode(entry.value)).toString(),
+      };
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      baseUrl = 'http://${server.address.address}:${server.port}';
+      manager = AsrModelManager(
+        modelsRoot: modelsRoot,
+        settings: settings,
+        allowedDownloadHosts: {server.address.address},
+      );
+      unawaited(
+        server.forEach((request) async {
+          final name = request.uri.pathSegments.last;
+          if (name == 'potok-model.json') {
+            request.response.write(
+              json.encode({
+                'model_id': 'downloaded-model',
+                'engine': 'sherpa-onnx',
+                'model_type': 'nemo_transducer',
+                'languages': ['ru'],
+                'version': '1',
+                'license': 'MIT',
+                'size_bytes': filePayloads.values
+                    .map((v) => utf8.encode(v).length)
+                    .fold<int>(0, (sum, v) => sum + v),
+                'files': manifestHashes,
+              }),
+            );
+          } else if (filePayloads.containsKey(name)) {
+            request.response.write(filePayloads[name]);
+          } else {
+            request.response.statusCode = HttpStatus.notFound;
+          }
+          await request.response.close();
+        }),
+      );
+    });
+
+    tearDown(() async {
+      await server.close(force: true);
+    });
+
+    test('downloads the manifest and every file, then installs', () async {
+      final progressValues = <double>[];
+      final id = await manager.downloadAndInstall(
+        '$baseUrl/potok-model.json',
+        onProgress: progressValues.add,
+      );
+
+      expect(id, 'downloaded-model');
+      final installed = await manager.installedManifest(id);
+      expect(installed, isNotNull);
+      expect(installed!.modelType, 'nemo_transducer');
+      expect(installed.files.keys, filePayloads.keys.toSet());
+      expect(progressValues, isNotEmpty);
+      expect(progressValues.last, 1.0);
+    });
+
+    test('rejects a manifest URL on a host outside the allowlist', () async {
+      final other = AsrModelManager(modelsRoot: modelsRoot, settings: settings);
+      await expectLater(
+        other.downloadAndInstall('$baseUrl/potok-model.json'),
+        throwsA(isA<ModelPackException>()),
+      );
+    });
+
+    test('hash mismatch from a corrupted download is rejected', () async {
+      // Манифест уже раздаёт hashes исходного содержимого; файл теперь
+      // отдаёт другие байты — установка должна поймать несовпадение.
+      filePayloads['tokens.txt'] = 'tampered-after-hash-computed';
+      await expectLater(
+        manager.downloadAndInstall('$baseUrl/potok-model.json'),
+        throwsA(isA<ModelPackException>()),
+      );
     });
   });
 
@@ -291,19 +544,4 @@ void main() {
       expect(await manager.activeModelDir(), isNull);
     });
   });
-}
-
-class _MapAssetBundle extends CachingAssetBundle {
-  final Map<String, Uint8List> files;
-  int loads = 0;
-
-  _MapAssetBundle(this.files);
-
-  @override
-  Future<ByteData> load(String key) async {
-    loads++;
-    final bytes = files[key];
-    if (bytes == null) throw StateError('missing asset: $key');
-    return ByteData.sublistView(bytes);
-  }
 }

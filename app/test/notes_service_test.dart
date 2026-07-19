@@ -310,6 +310,75 @@ void main() {
     });
   });
 
+  group('trash purge (forever delete)', () {
+    test('purgeNote refuses a note that is not trashed', () async {
+      await service.createTextNote('active note');
+      final note = (await service.watchNotes().first).single;
+      await expectLater(service.purgeNote(note), throwsArgumentError);
+    });
+
+    test('purgeNote removes the note, its audio file and child rows', () async {
+      final staged = await recordedNote();
+      var note = (await service.watchNotes().first).single;
+      final asset = (await service.watchAudioAssets(note.id).first).single;
+      final revisionId = await insertReadyRevision(
+        staged.noteId,
+        staged.assetId,
+      );
+      final file = File(
+        temp.path + Platform.pathSeparator + asset.relativePath,
+      );
+      expect(file.existsSync(), isTrue);
+
+      await service.moveToTrash(note);
+      note = (await service.watchTrash().first).single;
+      await service.purgeNote(note);
+
+      expect(file.existsSync(), isFalse);
+      expect(await service.getNote(note.id), isNull);
+      expect(await service.watchTrash().first, isEmpty);
+      expect(
+        await (db.select(
+          db.mediaAssets,
+        )..where((row) => row.id.equals(asset.id))).get(),
+        isEmpty,
+      );
+      expect(
+        await (db.select(
+          db.transcriptRevisions,
+        )..where((row) => row.id.equals(revisionId))).get(),
+        isEmpty,
+      );
+      expect(
+        await (db.select(
+          db.noteEvents,
+        )..where((row) => row.noteId.equals(note.id))).get(),
+        isEmpty,
+      );
+    });
+
+    test('purgeNotes bulk-deletes and is atomic on stale revision', () async {
+      await service.createTextNote('a');
+      await service.createTextNote('b');
+      final notes = await service.watchNotes().first;
+      for (final note in notes) {
+        await service.moveToTrash(note);
+      }
+      var trashed = await service.watchTrash().first;
+      expect(trashed, hasLength(2));
+
+      await (db.update(db.notes)..where((row) => row.id.equals(trashed[0].id)))
+          .write(NotesCompanion(revision: Value(trashed[0].revision + 1)));
+
+      await expectLater(service.purgeNotes(trashed), throwsStateError);
+      expect(await service.watchTrash().first, hasLength(2));
+
+      trashed = await service.watchTrash().first;
+      await service.purgeNotes(trashed);
+      expect(await service.watchTrash().first, isEmpty);
+    });
+  });
+
   group('transcription acceptance', () {
     test('accept appends paragraph once and marks revision accepted', () async {
       final staged = await recordedNote();

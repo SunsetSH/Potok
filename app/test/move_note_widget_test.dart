@@ -140,6 +140,28 @@ void main() {
     expect(find.text('Выбрано: 1'), findsNothing);
   });
 
+  testWidgets(
+    'selecting the first card does not shift the list (stable header height)',
+    (tester) async {
+      await tester.pumpWidget(
+        app(
+          size: const Size(1000, 800),
+          child: NotesListPane(onOpenNote: (_) {}),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final cardFinder = find.byKey(const ValueKey('note-card-note-1'));
+      final topBefore = tester.getTopLeft(cardFinder).dy;
+
+      await tester.tap(find.byKey(const ValueKey('bulk-select-note-1')));
+      await tester.pump();
+
+      final topAfter = tester.getTopLeft(cardFinder).dy;
+      expect(topAfter, topBefore);
+    },
+  );
+
   testWidgets('wide layout exposes draggable cards and project drop targets', (
     tester,
   ) async {

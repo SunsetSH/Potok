@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -74,6 +75,15 @@ class _FakeRecognizer implements LocalSpeechRecognizer {
       audioDuration: const Duration(seconds: 1),
       processingTime: const Duration(milliseconds: 5),
     );
+  }
+
+  @override
+  Future<TranscriptionResult> transcribeSamples(
+    Float32List samples, {
+    int sampleRate = 16000,
+    String languageHint = '',
+  }) {
+    throw UnimplementedError('not used by the transcription queue tests');
   }
 }
 

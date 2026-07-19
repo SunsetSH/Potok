@@ -140,6 +140,13 @@ class RecordAudioRecorderAdapter implements AudioRecorderPort {
       autoGain: true,
       echoCancel: true,
       noiseSuppress: true,
+      // VOICE_RECOGNITION — источник, который Android документирует как
+      // предназначенный для распознавания речи: в отличие от defaultSource,
+      // он не даёт OEM-прошивке применить свою (часто конфликтующую) цепочку
+      // AGC/NS/AEC поверх нашей — только явно запрошенные выше эффекты.
+      androidConfig: const AndroidRecordConfig(
+        audioSource: AndroidAudioSource.voiceRecognition,
+      ),
     );
     try {
       if (format == AudioRecordingFormat.wavPcm16) {
@@ -352,7 +359,8 @@ class RecordAudioRecorderAdapter implements AudioRecorderPort {
     if (details.contains('access denied') || details.contains('permission')) {
       return AudioRecorderStartFailure.permission;
     }
-    if (details.contains('not implemented') || details.contains('unsupported')) {
+    if (details.contains('not implemented') ||
+        details.contains('unsupported')) {
       return AudioRecorderStartFailure.unsupported;
     }
     if (details.contains('device') || details.contains('not found')) {

@@ -23,9 +23,8 @@ import '../application/transcription_queue.dart';
 import '../domain/clock.dart';
 import '../domain/id_generator.dart';
 import '../domain/types.dart';
-import '../infrastructure/asr/bundled_model_installer.dart';
 import '../infrastructure/asr/model_manager.dart';
-import '../infrastructure/asr/sherpa_whisper_recognizer.dart';
+import '../infrastructure/asr/sherpa_recognizer_factory.dart';
 import '../infrastructure/audio_player_controller.dart';
 import '../infrastructure/audio_recorder.dart';
 import '../infrastructure/db/database.dart';
@@ -96,7 +95,6 @@ final modelManagerProvider = FutureProvider<AsrModelManager>((ref) async {
     settings: ref.watch(settingsServiceProvider),
     devFallbackDir: Platform.environment['POTOK_ASR_MODEL_DIR'],
   );
-  await BundledModelInstaller().ensureInstalled(manager);
   return manager;
 });
 
@@ -118,8 +116,7 @@ final transcriptionQueueProvider = FutureProvider<TranscriptionQueue>((
     db: ref.watch(databaseProvider),
     media: await ref.watch(mediaStoreProvider.future),
     models: await ref.watch(modelManagerProvider.future),
-    recognizerFactory: (modelDir) =>
-        SherpaWhisperRecognizer(modelDir: modelDir),
+    recognizerFactory: (modelDir) => createSherpaRecognizer(modelDir),
     engineId: 'sherpa-onnx',
     clock: ref.watch(clockProvider),
     ids: ref.watch(idGeneratorProvider),

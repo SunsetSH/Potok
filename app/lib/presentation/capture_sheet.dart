@@ -14,7 +14,7 @@ import '../application/notes_service.dart';
 import '../application/settings_service.dart';
 import '../domain/document.dart';
 import '../domain/types.dart';
-import '../infrastructure/asr/sherpa_whisper_recognizer.dart';
+import '../infrastructure/asr/sherpa_recognizer_factory.dart';
 import '../infrastructure/audio_recorder.dart';
 import '../infrastructure/db/database.dart';
 import '../infrastructure/recording_platform.dart';
@@ -196,11 +196,9 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
       // согласован с _finishRecordingImpl.
       final beforeDraft = recorderOwner ?? Future<void>.value();
       unawaited(
-        beforeDraft
-            .then((_) => _saveDraftNow())
-            .catchError((Object e) {
-              debugPrint('draft flush failed: ${e.runtimeType}');
-            }),
+        beforeDraft.then((_) => _saveDraftNow()).catchError((Object e) {
+          debugPrint('draft flush failed: ${e.runtimeType}');
+        }),
       );
     }
     if (recorderOwner == null) {
@@ -737,7 +735,9 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
     if (service == null) {
       // Сервис недоступен в момент уничтожения route ОС — заметка из этой
       // записи не будет создана. Фиксируем потерю явно, не молча.
-      debugPrint('detached finalize skipped: notes service unavailable, recording lost');
+      debugPrint(
+        'detached finalize skipped: notes service unavailable, recording lost',
+      );
       await _stopLivePreview();
       await _recorder.cancel();
       return;
@@ -808,8 +808,8 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
     }
     _liveDecodeInFlight = true;
     try {
-      final result = await SherpaWhisperRecognizer(
-        modelDir: modelDir,
+      final result = await createSherpaRecognizer(
+        modelDir,
       ).transcribeSamples(samples);
       final text = result.text.trim();
       if (text.isNotEmpty && mounted && generation == _liveGeneration) {

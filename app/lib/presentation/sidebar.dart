@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 
 import '../application/note_list_query.dart';
 import '../application/notes_service.dart';
@@ -11,6 +13,7 @@ import '../application/settings_service.dart';
 import '../infrastructure/asr/model_manager.dart';
 import '../infrastructure/db/database.dart';
 import 'android_launch_intents.dart';
+import 'asr_model_catalog_view.dart';
 import 'data_section.dart';
 import 'entity_color_palette.dart';
 import 'move_note.dart';
@@ -1120,15 +1123,18 @@ class _AsrSettingsSection extends ConsumerStatefulWidget {
 
 class _AsrSettingsSectionState extends ConsumerState<_AsrSettingsSection> {
   final _pathController = TextEditingController();
+  List<XFile> _pickedFiles = const [];
   String? _error;
   bool _busy = false;
 
+  /// Путь к папке (для Windows/десктопа, где обычный доступ к диску есть).
   Future<void> _pickDirectory() async {
     try {
       final path = await getDirectoryPath(confirmButtonText: 'Выбрать модель');
       if (path != null && mounted) {
         setState(() {
           _pathController.text = path;
+          _pickedFiles = const [];
           _error = null;
         });
       }
@@ -1140,6 +1146,45 @@ class _AsrSettingsSectionState extends ConsumerState<_AsrSettingsSection> {
     }
   }
 
+  /// Выбор отдельных файлов модели (encoder/decoder/tokens[/data]).
+  ///
+  /// На Android выбор ПАПКИ идёт через SAF (ACTION_OPEN_DOCUMENT_TREE):
+  /// плагин реконструирует похожий на настоящий путь вида
+  /// `/storage/emulated/0/...`, но обычное чтение файлов (`dart:io`) по
+  /// этому пути без выданного через SAF доступа на современных Android
+  /// не работает — папка «видна» (existsSync=true), а список файлов
+  /// внутри — пуст. Выбор отдельных ФАЙЛОВ идёт через ACTION_OPEN_DOCUMENT
+  /// и даёт полноценный доступ на чтение через ContentResolver независимо
+  /// от scoped storage — поэтому именно этот путь надёжен на Android.
+  Future<void> _pickFiles() async {
+    try {
+      // file_selector_android переводит `extensions` в MIME через системную
+      // MimeTypeMap. У .onnx/.data нет известного Android'у MIME, а у .txt
+      // есть ('text/plain') — если хотя бы одно расширение резолвится, а
+      // остальные нет, плагин выставляет intent.setType на единственный
+      // распознанный MIME и .onnx/.data пропадают из системного проводника
+      // целиком. На Android поэтому не фильтруем по расширению вовсе.
+      final typeGroup = Platform.isAndroid
+          ? const XTypeGroup(label: 'Файлы модели', mimeTypes: ['*/*'])
+          : const XTypeGroup(
+              label: 'Файлы модели',
+              extensions: ['onnx', 'txt', 'data'],
+            );
+      final files = await openFiles(acceptedTypeGroups: [typeGroup]);
+      if (files.isEmpty || !mounted) return;
+      setState(() {
+        _pickedFiles = files;
+        _pathController.clear();
+        _error = null;
+      });
+    } catch (error) {
+      debugPrint('model file picker failed: ${error.runtimeType}');
+      if (mounted) {
+        setState(() => _error = 'Выбор файлов недоступен на этой платформе');
+      }
+    }
+  }
+
   @override
   void dispose() {
     _pathController.dispose();
@@ -1147,24 +1192,44 @@ class _AsrSettingsSectionState extends ConsumerState<_AsrSettingsSection> {
   }
 
   Future<void> _install() async {
-    final path = _pathController.text.trim();
-    if (path.isEmpty) {
-      setState(() => _error = 'Укажите путь к папке модели');
+    final manualPath = _pathController.text.trim();
+    if (_pickedFiles.isEmpty && manualPath.isEmpty) {
+      setState(() => _error = 'Выберите файлы модели или укажите папку');
       return;
     }
     setState(() {
       _busy = true;
       _error = null;
     });
+    Directory? staging;
     try {
       final manager = await ref.read(modelManagerProvider.future);
-      final modelId = await manager.installWhisperDirectory(path);
+      String sourcePath;
+      if (_pickedFiles.isNotEmpty) {
+        final tempRoot = await getTemporaryDirectory();
+        staging = await Directory(
+          p.join(
+            tempRoot.path,
+            'asr-model-import-${DateTime.now().microsecondsSinceEpoch}',
+          ),
+        ).create(recursive: true);
+        for (final file in _pickedFiles) {
+          await file.saveTo(p.join(staging.path, file.name));
+        }
+        sourcePath = staging.path;
+      } else {
+        sourcePath = manualPath;
+      }
+      final modelId = await manager.installWhisperDirectory(sourcePath);
       await manager.activate(modelId);
       final queue = await ref.read(transcriptionQueueProvider.future);
       await queue.kick();
       if (!mounted) return;
       _pathController.clear();
-      setState(() => _busy = false);
+      setState(() {
+        _busy = false;
+        _pickedFiles = const [];
+      });
     } on ModelPackException catch (e) {
       if (!mounted) return;
       setState(() {
@@ -1178,6 +1243,10 @@ class _AsrSettingsSectionState extends ConsumerState<_AsrSettingsSection> {
         _busy = false;
         _error = 'Не удалось установить модель';
       });
+    } finally {
+      if (staging != null && staging.existsSync()) {
+        await staging.delete(recursive: true);
+      }
     }
   }
 
@@ -1210,19 +1279,51 @@ class _AsrSettingsSectionState extends ConsumerState<_AsrSettingsSection> {
             ),
           ],
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: 12),
+        const AsrModelCatalogView(),
+        const SizedBox(height: 4),
         Text(
-          'Скачайте multilingual Whisper ONNX из официального релиза '
-          'sherpa-onnx, распакуйте и выберите папку. Распознавание выполняется '
-          'только локально.',
+          'Ручная установка из папки/файлов',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            color: c.text,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          Platform.isAndroid
+              ? 'Скачайте ONNX-пак sherpa-onnx (Whisper/GigaAM/Parakeet) и '
+                    'выберите файлы модели кнопкой ниже.'
+              : 'Скачайте ONNX-пак sherpa-onnx (Whisper/GigaAM/Parakeet), '
+                    'распакуйте и выберите папку.',
           style: TextStyle(fontSize: 11, color: c.muted, height: 1.35),
         ),
         const SizedBox(height: 8),
-        OutlinedButton.icon(
-          onPressed: _busy ? null : _pickDirectory,
-          icon: const Icon(Icons.folder_open_rounded),
-          label: const Text('Выбрать папку модели'),
-        ),
+        // Отдельная кнопка на платформу: папка на Android ненадёжна (SAF),
+        // а на Windows работает и проще для пользователя, чем выбор файлов
+        // по одному.
+        if (Platform.isAndroid) ...[
+          OutlinedButton.icon(
+            onPressed: _busy ? null : _pickFiles,
+            icon: const Icon(Icons.description_outlined),
+            label: const Text('Выбрать файлы модели'),
+          ),
+          if (_pickedFiles.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                'Выбрано: ${_pickedFiles.map((f) => f.name).join(', ')}',
+                style: TextStyle(fontSize: 11, color: c.muted),
+              ),
+            ),
+        ] else ...[
+          OutlinedButton.icon(
+            onPressed: _busy ? null : _pickDirectory,
+            icon: const Icon(Icons.folder_open_rounded),
+            label: const Text('Выбрать папку модели'),
+          ),
+        ],
         const SizedBox(height: 8),
         TextField(
           controller: _pathController,
@@ -1232,12 +1333,17 @@ class _AsrSettingsSectionState extends ConsumerState<_AsrSettingsSection> {
             hintText: 'Путь к распакованной Whisper ONNX модели',
             hintStyle: TextStyle(fontSize: 12, color: c.muted),
             errorText: _error,
-            errorMaxLines: 2,
+            errorMaxLines: 3,
             isDense: true,
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(c.radiusSmall),
             ),
           ),
+          onChanged: (_) {
+            if (_pickedFiles.isNotEmpty) {
+              setState(() => _pickedFiles = const []);
+            }
+          },
           onSubmitted: (_) => _install(),
         ),
         const SizedBox(height: 8),

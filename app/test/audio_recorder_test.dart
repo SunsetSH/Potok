@@ -86,7 +86,11 @@ void main() {
           throwsA(isA<AudioRecorderWriteException>()),
         );
         expect(file.closed, isTrue);
-        expect(File(wavPath).existsSync(), isFalse, reason: 'битый файл удалён');
+        expect(
+          File(wavPath).existsSync(),
+          isFalse,
+          reason: 'битый файл удалён',
+        );
 
         // Состояние сброшено: адаптер снова готов к записи.
         await startWav();
@@ -96,24 +100,27 @@ void main() {
       },
     );
 
-    test('dispose() waits for the pending write queue before closing', () async {
-      await startWav();
-      final gate = Completer<void>();
-      file.writeGate = gate.future;
-      platform.emit(chunk());
-      await pumpEventQueue();
+    test(
+      'dispose() waits for the pending write queue before closing',
+      () async {
+        await startWav();
+        final gate = Completer<void>();
+        file.writeGate = gate.future;
+        platform.emit(chunk());
+        await pumpEventQueue();
 
-      var disposed = false;
-      final disposing = adapter.dispose().then((_) => disposed = true);
-      await pumpEventQueue();
-      expect(disposed, isFalse, reason: 'dispose ждёт очередь записи');
-      expect(file.closed, isFalse);
+        var disposed = false;
+        final disposing = adapter.dispose().then((_) => disposed = true);
+        await pumpEventQueue();
+        expect(disposed, isFalse, reason: 'dispose ждёт очередь записи');
+        expect(file.closed, isFalse);
 
-      gate.complete();
-      await disposing;
-      expect(file.closed, isTrue);
-      expect(file.closedAfterLastWrite, isTrue);
-    });
+        gate.complete();
+        await disposing;
+        expect(file.closed, isTrue);
+        expect(file.closedAfterLastWrite, isTrue);
+      },
+    );
 
     test('stop() rolls back state when the platform stop throws', () async {
       await startWav();

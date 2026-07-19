@@ -182,8 +182,7 @@ class _TagEditorDialogState extends ConsumerState<_TagEditorDialog> {
               children: [
                 for (final color in entityPresetColors)
                   Semantics(
-                    label:
-                        'Цвет тега ${entityPresetColors.indexOf(color) + 1}',
+                    label: 'Цвет тега ${entityPresetColors.indexOf(color) + 1}',
                     selected: color == _selectedColor,
                     button: true,
                     child: InkWell(

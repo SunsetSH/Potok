@@ -213,9 +213,7 @@ class ImagesService {
     Expression<bool> draftImages($MediaAssetsTable asset) =>
         asset.ownerNoteId.equals(noteId) &
         asset.kind.equalsValue(AssetKind.image);
-    final assets = await (db.select(
-      db.mediaAssets,
-    )..where(draftImages)).get();
+    final assets = await (db.select(db.mediaAssets)..where(draftImages)).get();
     for (final asset in assets) {
       await media.discard(asset.relativePath);
     }

@@ -4,6 +4,12 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+    <!-- ADR-007: единственное сетевое использование во всём приложении —
+         скачивание ASR-моделей по явному действию пользователя (allowlisted-
+         клиент, только github.com/*.githubusercontent.com). Расшифровка речи
+         и вся остальная работа приложения — полностью офлайн; это разрешение
+         не используется больше нигде. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <!-- Media3 declares this for network streams, but Potok only opens managed
          local files and has no network playback path. Keep release capability
          aligned with the offline-only privacy contract. -->

@@ -39,10 +39,7 @@ void main() {
       final after = DateTime.now().toUtc();
 
       expect(now.isUtc, isTrue);
-      expect(
-        now.isAfter(before.subtract(const Duration(seconds: 1))),
-        isTrue,
-      );
+      expect(now.isAfter(before.subtract(const Duration(seconds: 1))), isTrue);
       expect(now.isBefore(after.add(const Duration(seconds: 1))), isTrue);
     });
 

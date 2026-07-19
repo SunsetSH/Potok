@@ -413,7 +413,8 @@ GROUP BY project_id
       NoteSortField.createdAt => note.createdAtUtc,
       NoteSortField.updatedAt => note.updatedAtUtc,
       NoteSortField.eventAt => note.eventAtUtc ?? note.createdAtUtc,
-      NoteSortField.title => note.title ?? _titleSortFallback(note.documentPlainText),
+      NoteSortField.title =>
+        note.title ?? _titleSortFallback(note.documentPlainText),
       NoteSortField.project => project?.name,
     };
   }
@@ -710,10 +711,9 @@ GROUP BY project_id
   }
 
   Future<void> discardImageNoteDraft(Note draft) async {
-    await (db.delete(db.notes)..where(
-          (n) => n.id.equals(draft.id) & n.isHidden.equals(true),
-        ))
-        .go();
+    await (db.delete(
+      db.notes,
+    )..where((n) => n.id.equals(draft.id) & n.isHidden.equals(true))).go();
   }
 
   /// Регистрирует staged-запись и возвращает путь для рекордера. Строки в БД
@@ -1599,6 +1599,44 @@ GROUP BY project_id
     });
   }
 
+  /// Массовое восстановление из корзины (симметрично [bulkMoveToTrash]).
+  Future<void> bulkRestoreFromTrash(Iterable<Note> selection) async {
+    final notes = _validateBulkSelection(selection);
+    final now = clock.nowUtcMillis();
+    await db.transaction(() async {
+      for (final note in notes) {
+        final changed =
+            await (db.update(db.notes)..where(
+                  (row) =>
+                      row.id.equals(note.id) &
+                      row.revision.equals(note.revision) &
+                      row.deletedAtUtc.isNotNull(),
+                ))
+                .write(
+                  NotesCompanion(
+                    deletedAtUtc: const Value(null),
+                    updatedAtUtc: Value(now),
+                    revision: Value(note.revision + 1),
+                  ),
+                );
+        if (changed == 0) throw StateError('bulk restore conflict');
+        await _appendEvent(
+          note.id,
+          NoteEventKind.restored,
+          projectId: note.projectId,
+          at: now,
+        );
+        await _journal(
+          entityId: note.id,
+          operationKind: 'note.bulk_restore',
+          baseRevision: note.revision,
+          newRevision: note.revision + 1,
+          at: now,
+        );
+      }
+    });
+  }
+
   List<Note> _validateBulkSelection(Iterable<Note> selection) {
     final byId = <String, Note>{for (final note in selection) note.id: note};
     if (byId.isEmpty || byId.length > 500) {
@@ -1630,6 +1668,71 @@ GROUP BY project_id
   Future<void> moveToTrash(Note note) => _setDeleted(note, deleted: true);
 
   Future<void> restoreFromTrash(Note note) => _setDeleted(note, deleted: false);
+
+  /// Безвозвратное удаление одной уже трэшнутой заметки (FR-DEL-002):
+  /// снимает дочерние строки (медиа, аудио, расшифровки, теги, события) и
+  /// файлы ассетов с диска. Заметка должна уже находиться в корзине.
+  Future<void> purgeNote(Note note) => purgeNotes([note]);
+
+  /// Массовое безвозвратное удаление уже трэшнутых заметок. Атомарно на
+  /// уровне БД для всего выбора; файлы ассетов удаляются после коммита.
+  Future<void> purgeNotes(Iterable<Note> selection) async {
+    final notes = _validateBulkSelection(selection);
+    for (final note in notes) {
+      if (note.deletedAtUtc == null) {
+        throw ArgumentError('only trashed notes can be purged forever');
+      }
+    }
+    final now = clock.nowUtcMillis();
+    final assetsToDiscard = <MediaAsset>[];
+    await db.transaction(() async {
+      for (final note in notes) {
+        final assets = await (db.select(
+          db.mediaAssets,
+        )..where((row) => row.ownerNoteId.equals(note.id))).get();
+        assetsToDiscard.addAll(assets);
+        await (db.delete(
+          db.transcriptRevisions,
+        )..where((row) => row.noteId.equals(note.id))).go();
+        await (db.delete(
+          db.audioRecordings,
+        )..where((row) => row.assetId.isIn(assets.map((a) => a.id)))).go();
+        await (db.delete(
+          db.mediaAssets,
+        )..where((row) => row.ownerNoteId.equals(note.id))).go();
+        await (db.delete(
+          db.noteTags,
+        )..where((row) => row.noteId.equals(note.id))).go();
+        await (db.delete(
+          db.noteEvents,
+        )..where((row) => row.noteId.equals(note.id))).go();
+        // NoteEvents ссылается на notes.id по FK — событие "purged" здесь не
+        // пишем, дочерние события уже сняты выше. Журнал операций хранит
+        // entityId как обычный текст, поэтому переживает удаление строки.
+        final removed =
+            await (db.delete(db.notes)..where(
+                  (row) =>
+                      row.id.equals(note.id) &
+                      row.revision.equals(note.revision) &
+                      row.deletedAtUtc.isNotNull(),
+                ))
+                .go();
+        if (removed == 0) {
+          throw StateError('note changed, purge cancelled');
+        }
+        await _journal(
+          entityId: note.id,
+          operationKind: 'note.purge',
+          baseRevision: note.revision,
+          newRevision: null,
+          at: now,
+        );
+      }
+    });
+    for (final asset in assetsToDiscard) {
+      await media.discard(asset.relativePath);
+    }
+  }
 
   Future<void> _setDeleted(Note note, {required bool deleted}) async {
     final now = clock.nowUtcMillis();

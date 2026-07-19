@@ -6,18 +6,16 @@ import 'package:path/path.dart' as p;
 import 'local_speech_recognizer.dart';
 import 'sherpa_asr_worker.dart';
 
-/// sherpa-onnx offline Whisper adapter (ADR-002).
-///
-/// Slice limitation: accepts WAV input only; the compressed-source decode step
-/// (M4A -> mono PCM 16k) lands in WP-03. Decoding runs in the shared
-/// [SherpaAsrWorker] isolate, which caches the native recognizer, so the UI
-/// thread never blocks and the ONNX model is not reloaded per file/preview
-/// chunk. [disposeWorker] frees the native recognizer and the isolate.
-class SherpaWhisperRecognizer implements LocalSpeechRecognizer {
+/// sherpa-onnx offline NeMo-transducer adapter: covers GigaAM (Russian) and
+/// NVIDIA Parakeet TDT (multilingual) model packs, which both export to the
+/// same encoder/decoder/joiner + tokens.txt layout via sherpa-onnx's NeMo
+/// transducer conversion scripts. Shares the isolate-caching worker with
+/// [SherpaWhisperRecognizer] — only the native model config differs.
+class SherpaTransducerRecognizer implements LocalSpeechRecognizer {
   final String modelDir;
   final String? nativeLibraryDir;
 
-  SherpaWhisperRecognizer({required this.modelDir, this.nativeLibraryDir});
+  SherpaTransducerRecognizer({required this.modelDir, this.nativeLibraryDir});
 
   @override
   String get engineId => 'sherpa-onnx';
@@ -29,7 +27,7 @@ class SherpaWhisperRecognizer implements LocalSpeechRecognizer {
     String audioPath, {
     String languageHint = '',
   }) async {
-    final files = _locateWhisperFiles(modelDir);
+    final files = _locateTransducerFiles(modelDir);
     final started = DateTime.now();
     final outcome = await SherpaAsrWorker.instance.run(
       SherpaAsrRequest(
@@ -39,8 +37,6 @@ class SherpaWhisperRecognizer implements LocalSpeechRecognizer {
         sampleRate: 0,
         languageHint: languageHint,
         nativeLibraryDir: nativeLibraryDir,
-        // Финальная расшифровка не глушится silence-gate: тихая речь всё
-        // равно уходит в декодер, пустой текст возможен только от модели.
         applySilenceGate: false,
       ),
     );
@@ -59,7 +55,7 @@ class SherpaWhisperRecognizer implements LocalSpeechRecognizer {
     int sampleRate = 16000,
     String languageHint = '',
   }) async {
-    final files = _locateWhisperFiles(modelDir);
+    final files = _locateTransducerFiles(modelDir);
     final started = DateTime.now();
     final outcome = await SherpaAsrWorker.instance.run(
       SherpaAsrRequest(
@@ -82,17 +78,14 @@ class SherpaWhisperRecognizer implements LocalSpeechRecognizer {
   }
 
   /// Frees the shared worker isolate and its cached native recognizer.
-  /// The next transcription transparently restarts the worker.
   static Future<void> disposeWorker() => SherpaAsrWorker.instance.dispose();
 
-  /// Instance-level alias: recognizer instances are cheap facades over the
-  /// shared worker, so disposing any of them releases the shared resources.
   Future<void> dispose() => disposeWorker();
 }
 
 /// Prefers int8-quantized model files, falls back to fp32. Candidate names
 /// are sorted so the selection is deterministic across platforms.
-SherpaModelFiles _locateWhisperFiles(String dir) {
+SherpaModelFiles _locateTransducerFiles(String dir) {
   final directory = Directory(dir);
   if (!directory.existsSync()) {
     throw ModelUnavailableException('model directory not found: $dir');
@@ -120,10 +113,10 @@ SherpaModelFiles _locateWhisperFiles(String dir) {
     throw ModelUnavailableException('missing tokens.txt in $dir');
   }
   return SherpaModelFiles(
-    modelType: 'whisper',
+    modelType: 'nemo_transducer',
     encoder: pick('encoder'),
     decoder: pick('decoder'),
-    joiner: '',
+    joiner: pick('joiner'),
     tokens: p.join(dir, tokens.first),
   );
 }

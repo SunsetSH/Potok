@@ -270,123 +270,150 @@ class _NotesListPaneState extends ConsumerState<NotesListPane> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Row(
-                  children: [
-                    if (widget.showMenuButton)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: IconButton(
-                          tooltip: 'Меню',
-                          icon: Icon(Icons.menu_rounded, color: c.text),
-                          onPressed: () => Scaffold.of(context).openDrawer(),
-                        ),
-                      ),
-                    Expanded(
-                      child: Text(
-                        selectedIds.isEmpty
-                            ? _sectionTitle(section, projects)
-                            : 'Выбрано: ${selectedIds.length}',
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: -0.4,
-                          color: c.text,
-                        ),
-                      ),
-                    ),
-                    if (selectedIds.isEmpty && !isTrash)
-                      IconButton(
-                        key: const ValueKey('note-list-settings'),
-                        tooltip: 'Фильтры и сортировка',
-                        onPressed: () => showNoteListSettingsSheet(
-                          context,
-                          ref,
-                          section: section,
-                          projects: projects,
-                          tags: availableTags,
-                        ),
-                        icon: Badge(
-                          isLabelVisible: listSettings.filter.isActive,
-                          label: Text(
-                            '${listSettings.filter.activeDimensionCount}',
+                // Высота строки заголовка зафиксирована: набор иконок справа
+                // меняется (фильтр активен/нет, выбор карточек), но сама
+                // строка не должна «прыгать» — иначе сдвигается весь список
+                // ниже при выделении первой заметки.
+                SizedBox(
+                  height: 48,
+                  child: Row(
+                    children: [
+                      if (widget.showMenuButton)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: IconButton(
+                            tooltip: 'Меню',
+                            icon: Icon(Icons.menu_rounded, color: c.text),
+                            onPressed: () => Scaffold.of(context).openDrawer(),
                           ),
-                          child: const Icon(Icons.tune_rounded),
+                        ),
+                      Expanded(
+                        child: Text(
+                          selectedIds.isEmpty
+                              ? _sectionTitle(section, projects)
+                              : 'Выбрано: ${selectedIds.length}',
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: -0.4,
+                            color: c.text,
+                          ),
                         ),
                       ),
-                  ],
-                ),
-                if (!isTrash) ...[
-                  const SizedBox(height: 14),
-                  SizedBox(
-                    height: 132,
-                    child: selectedIds.isEmpty
-                        ? Column(
-                            children: [
-                              _SearchField(
-                                controller: _searchController,
-                                onChanged: _onSearchChanged,
-                                onClear: _clearSearch,
-                              ),
-                              const SizedBox(height: 11),
-                              const _FilterChipsRow(),
-                            ],
-                          )
-                        : Align(
-                            alignment: Alignment.topCenter,
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                              children: [
-                                IconButton(
-                                  key: const ValueKey('bulk-status-done'),
-                                  tooltip: 'Отметить выполненными',
-                                  onPressed: () => _runBulk(
-                                    (service, notes) => service.bulkSetStatus(
-                                      notes,
-                                      NoteStatus.done,
-                                    ),
-                                  ),
-                                  icon: const Icon(Icons.done_all_rounded),
-                                ),
-                                IconButton(
-                                  key: const ValueKey('bulk-move'),
-                                  tooltip: 'Перенести в проект',
-                                  onPressed: () => _bulkMove(projects),
-                                  icon: const Icon(
-                                    Icons.drive_file_move_outline,
-                                  ),
-                                ),
-                                IconButton(
-                                  key: const ValueKey('bulk-tag'),
-                                  tooltip: 'Добавить глобальный тег',
-                                  onPressed: globalTags.isEmpty
-                                      ? null
-                                      : () => _bulkAssignTag(globalTags),
-                                  icon: const Icon(Icons.label_outline_rounded),
-                                ),
-                                IconButton(
-                                  key: const ValueKey('bulk-trash'),
-                                  tooltip: 'В корзину',
-                                  onPressed: _bulkTrash,
-                                  icon: const Icon(
-                                    Icons.delete_outline_rounded,
-                                  ),
-                                ),
-                                IconButton(
-                                  key: const ValueKey('bulk-clear'),
-                                  tooltip: 'Отменить выбор',
-                                  onPressed: () => ref
-                                      .read(
-                                        bulkSelectedNoteIdsProvider.notifier,
-                                      )
-                                      .clear(),
-                                  icon: const Icon(Icons.close_rounded),
-                                ),
-                              ],
+                      if (selectedIds.isEmpty &&
+                          !isTrash &&
+                          listSettings.filter.isActive)
+                        IconButton(
+                          key: const ValueKey('clear-note-filters'),
+                          tooltip:
+                              'Сбросить фильтры '
+                              '(${listSettings.filter.activeDimensionCount})',
+                          onPressed: () => ref
+                              .read(noteListViewSettingsProvider.notifier)
+                              .clearFilters(),
+                          icon: const Icon(Icons.filter_alt_off_rounded),
+                        ),
+                      if (selectedIds.isEmpty && !isTrash)
+                        IconButton(
+                          key: const ValueKey('note-list-settings'),
+                          tooltip: 'Фильтры и сортировка',
+                          onPressed: () => showNoteListSettingsSheet(
+                            context,
+                            ref,
+                            section: section,
+                            projects: projects,
+                            tags: availableTags,
+                          ),
+                          icon: Badge(
+                            isLabelVisible: listSettings.filter.isActive,
+                            label: Text(
+                              '${listSettings.filter.activeDimensionCount}',
                             ),
+                            child: const Icon(Icons.tune_rounded),
                           ),
+                        ),
+                    ],
                   ),
-                ],
+                ),
+                const SizedBox(height: 14),
+                SizedBox(
+                  height: isTrash ? 48 : 84,
+                  child: isTrash
+                      ? (selectedIds.isEmpty
+                            ? const SizedBox.shrink()
+                            : _TrashBulkBar(selectedCount: selectedIds.length))
+                      : (selectedIds.isEmpty
+                            ? Column(
+                                children: [
+                                  _SearchField(
+                                    controller: _searchController,
+                                    onChanged: _onSearchChanged,
+                                    onClear: _clearSearch,
+                                  ),
+                                  const SizedBox(height: 11),
+                                  const _FilterChipsRow(),
+                                ],
+                              )
+                            : Align(
+                                alignment: Alignment.topCenter,
+                                child: Row(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceEvenly,
+                                  children: [
+                                    IconButton(
+                                      key: const ValueKey('bulk-status-done'),
+                                      tooltip: 'Отметить выполненными',
+                                      onPressed: () => _runBulk(
+                                        (service, notes) =>
+                                            service.bulkSetStatus(
+                                              notes,
+                                              NoteStatus.done,
+                                            ),
+                                      ),
+                                      icon: const Icon(Icons.done_all_rounded),
+                                    ),
+                                    IconButton(
+                                      key: const ValueKey('bulk-move'),
+                                      tooltip: 'Перенести в проект',
+                                      onPressed: () => _bulkMove(projects),
+                                      icon: const Icon(
+                                        Icons.drive_file_move_outline,
+                                      ),
+                                    ),
+                                    IconButton(
+                                      key: const ValueKey('bulk-tag'),
+                                      tooltip: 'Добавить глобальный тег',
+                                      onPressed: globalTags.isEmpty
+                                          ? null
+                                          : () => _bulkAssignTag(globalTags),
+                                      icon: const Icon(
+                                        Icons.label_outline_rounded,
+                                      ),
+                                    ),
+                                    IconButton(
+                                      key: const ValueKey('bulk-trash'),
+                                      tooltip: 'В корзину',
+                                      onPressed: _bulkTrash,
+                                      icon: const Icon(
+                                        Icons.delete_outline_rounded,
+                                      ),
+                                    ),
+                                    IconButton(
+                                      key: const ValueKey('bulk-clear'),
+                                      tooltip: 'Отменить выбор',
+                                      onPressed: () => ref
+                                          .read(
+                                            bulkSelectedNoteIdsProvider
+                                                .notifier,
+                                          )
+                                          .clear(),
+                                      icon: const Icon(Icons.close_rounded),
+                                    ),
+                                  ],
+                                ),
+                              )),
+                ),
               ],
             ),
           ),
@@ -459,6 +486,9 @@ class _SearchField extends ConsumerWidget {
   }
 }
 
+/// Быстрые фильтры-чипы. Сброс живёт отдельно в заголовке панели (иконка
+/// рядом с «тюнером») — так строка чипов всегда имеет одну и ту же высоту
+/// и не переверстывается, когда фильтр становится активным.
 class _FilterChipsRow extends ConsumerWidget {
   const _FilterChipsRow();
 
@@ -466,69 +496,50 @@ class _FilterChipsRow extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final c = PotokColors.of(context);
     final active = ref.watch(activeQuickFilterProvider);
-    final settings = ref.watch(noteListViewSettingsProvider);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SizedBox(
-          height: 32,
-          child: settings.filter.isActive
-              ? ActionChip(
-                  key: const ValueKey('clear-note-filters'),
-                  avatar: const Icon(Icons.close_rounded, size: 15),
-                  label: Text(
-                    'Сбросить (${settings.filter.activeDimensionCount})',
-                  ),
-                  onPressed: () => ref
+    return SizedBox(
+      height: 32,
+      child: SingleChildScrollView(
+        key: const ValueKey('note-filter-scroll'),
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            for (final filter in NoteChipFilter.values)
+              Padding(
+                padding: const EdgeInsets.only(right: 7),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(999),
+                  onTap: () => ref
                       .read(noteListViewSettingsProvider.notifier)
-                      .clearFilters(),
-                )
-              : const SizedBox.shrink(),
-        ),
-        const SizedBox(height: 5),
-        SingleChildScrollView(
-          key: const ValueKey('note-filter-scroll'),
-          scrollDirection: Axis.horizontal,
-          child: Row(
-            children: [
-              for (final filter in NoteChipFilter.values)
-                Padding(
-                  padding: const EdgeInsets.only(right: 7),
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(999),
-                    onTap: () => ref
-                        .read(noteListViewSettingsProvider.notifier)
-                        .selectQuick(filter),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 6,
+                      .selectQuick(filter),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 7,
+                    ),
+                    decoration: BoxDecoration(
+                      color: filter == active ? c.accentSoft : c.surface,
+                      border: Border.all(
+                        color: filter == active ? c.accent : c.line,
                       ),
-                      decoration: BoxDecoration(
-                        color: filter == active ? c.accentSoft : c.surface,
-                        border: Border.all(
-                          color: filter == active ? c.accent : c.line,
-                        ),
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: Text(
-                        filter.label,
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: filter == active ? c.accent : c.muted,
-                          fontWeight: filter == active
-                              ? FontWeight.w700
-                              : FontWeight.w400,
-                        ),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Text(
+                      filter.label,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: filter == active ? c.accent : c.muted,
+                        fontWeight: filter == active
+                            ? FontWeight.w700
+                            : FontWeight.w400,
                       ),
                     ),
                   ),
                 ),
-              const SizedBox(width: 8),
-            ],
-          ),
+              ),
+            const SizedBox(width: 8),
+          ],
         ),
-      ],
+      ),
     );
   }
 }
@@ -1408,8 +1419,160 @@ String _shortDate(int utcMillis) {
       '${date.month.toString().padLeft(2, '0')}.${date.year}';
 }
 
+/// Панель массовых действий корзины: то же место в шапке, что и обычный
+/// bulk-toolbar (одинаковая высота — выбор первой заметки не сдвигает
+/// список).
+class _TrashBulkBar extends ConsumerWidget {
+  final int selectedCount;
+
+  const _TrashBulkBar({required this.selectedCount});
+
+  Future<void> _restoreSelected(BuildContext context, WidgetRef ref) async {
+    final ids = ref.read(bulkSelectedNoteIdsProvider);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final service = await ref.read(notesServiceProvider.future);
+      final notes = await service.getNotesByIds(ids);
+      if (notes.length != ids.length) throw StateError('selection changed');
+      await service.bulkRestoreFromTrash(notes);
+      ref.read(bulkSelectedNoteIdsProvider.notifier).clear();
+      messenger.showSnackBar(
+        PotokSnackBar(content: Text('Восстановлено заметок: ${notes.length}')),
+      );
+    } catch (e) {
+      debugPrint('bulk restore failed: ${e.runtimeType}');
+      messenger.showSnackBar(
+        PotokSnackBar(content: const Text('Не удалось восстановить заметки')),
+      );
+    }
+  }
+
+  Future<void> _deleteForeverSelected(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
+    final ids = ref.read(bulkSelectedNoteIdsProvider);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Удалить безвозвратно?'),
+        content: Text(
+          'Будет удалено заметок: ${ids.length}. Действие нельзя отменить.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            key: const ValueKey('confirm-bulk-purge'),
+            style: FilledButton.styleFrom(
+              backgroundColor: PotokColors.of(dialogContext).danger,
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Удалить навсегда'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final service = await ref.read(notesServiceProvider.future);
+      final notes = await service.getNotesByIds(ids);
+      if (notes.length != ids.length) throw StateError('selection changed');
+      await service.purgeNotes(notes);
+      ref.read(bulkSelectedNoteIdsProvider.notifier).clear();
+      messenger.showSnackBar(
+        PotokSnackBar(content: Text('Удалено навсегда: ${notes.length}')),
+      );
+    } catch (e) {
+      debugPrint('bulk purge failed: ${e.runtimeType}');
+      messenger.showSnackBar(
+        PotokSnackBar(content: const Text('Не удалось удалить заметки')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Align(
+      alignment: Alignment.topCenter,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          IconButton(
+            key: const ValueKey('trash-bulk-restore'),
+            tooltip: 'Восстановить выбранные',
+            onPressed: () => _restoreSelected(context, ref),
+            icon: const Icon(Icons.restore_rounded),
+          ),
+          IconButton(
+            key: const ValueKey('trash-bulk-purge'),
+            tooltip: 'Удалить навсегда',
+            onPressed: () => _deleteForeverSelected(context, ref),
+            icon: const Icon(Icons.delete_forever_rounded),
+          ),
+          IconButton(
+            key: const ValueKey('trash-bulk-clear'),
+            tooltip: 'Отменить выбор',
+            onPressed: () =>
+                ref.read(bulkSelectedNoteIdsProvider.notifier).clear(),
+            icon: const Icon(Icons.close_rounded),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _TrashList extends ConsumerWidget {
   const _TrashList();
+
+  Future<void> _deleteForever(
+    BuildContext context,
+    WidgetRef ref,
+    Note note,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Удалить безвозвратно?'),
+        content: const Text(
+          'Заметка и вложения будут удалены без возможности восстановления.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            key: const ValueKey('confirm-purge-note'),
+            style: FilledButton.styleFrom(
+              backgroundColor: PotokColors.of(dialogContext).danger,
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Удалить навсегда'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final service = await ref.read(notesServiceProvider.future);
+      await service.purgeNote(note);
+    } on StateError {
+      messenger.showSnackBar(
+        PotokSnackBar(content: Text('Заметка изменилась — список обновлён')),
+      );
+    } catch (e) {
+      debugPrint('purge failed: ${e.runtimeType}');
+      messenger.showSnackBar(
+        PotokSnackBar(content: Text('Не удалось удалить заметку')),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -1428,6 +1591,7 @@ class _TrashList extends ConsumerWidget {
         ),
       );
     }
+    final bulkSelectedIds = ref.watch(bulkSelectedNoteIdsProvider);
     return NotificationListener<ScrollNotification>(
       onNotification: (notification) {
         if (notification.metrics.extentAfter < 600 && loadedPage.hasMore) {
@@ -1452,6 +1616,7 @@ class _TrashList extends ConsumerWidget {
             );
           }
           final note = trash[index];
+          final bulkSelected = bulkSelectedIds.contains(note.id);
           final lines = note.documentPlainText
               .split('\n')
               .where((l) => l.trim().isNotEmpty)
@@ -1467,14 +1632,29 @@ class _TrashList extends ConsumerWidget {
                 );
           return Container(
             margin: const EdgeInsets.only(bottom: 6),
-            padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 6),
             decoration: BoxDecoration(
-              color: c.surface2,
-              border: Border.all(color: c.line),
+              color: bulkSelected ? c.accentSoft : c.surface2,
+              border: Border.all(color: bulkSelected ? c.accent : c.line),
               borderRadius: BorderRadius.circular(c.radiusSmall),
             ),
             child: Row(
               children: [
+                Opacity(
+                  opacity: bulkSelected ? 1 : 0.55,
+                  child: SizedBox.square(
+                    dimension: 28,
+                    child: Checkbox(
+                      key: ValueKey('trash-select-${note.id}'),
+                      value: bulkSelected,
+                      onChanged: (_) => ref
+                          .read(bulkSelectedNoteIdsProvider.notifier)
+                          .toggle(note.id),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -1517,6 +1697,12 @@ class _TrashList extends ConsumerWidget {
                     }
                   },
                   child: const Text('Восстановить'),
+                ),
+                IconButton(
+                  key: ValueKey('purge-note-${note.id}'),
+                  tooltip: 'Удалить навсегда',
+                  onPressed: () => _deleteForever(context, ref, note),
+                  icon: Icon(Icons.delete_forever_rounded, color: c.danger),
                 ),
               ],
             ),

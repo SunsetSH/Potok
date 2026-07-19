@@ -6,6 +6,7 @@ import 'package:window_manager/window_manager.dart';
 import 'presentation/android_launch_intents.dart';
 import 'presentation/app_shell.dart';
 import 'presentation/app_shortcuts.dart';
+import 'presentation/asr_first_run_prompt.dart';
 import 'presentation/providers.dart';
 import 'presentation/theme.dart';
 import 'presentation/windows_integration.dart';
@@ -40,7 +41,7 @@ class PotokApp extends ConsumerWidget {
       supportedLocales: const [Locale('ru'), Locale('en')],
       builder: (context, child) =>
           AppShortcuts(child: child ?? const SizedBox.shrink()),
-      home: const AppShell(),
+      home: const AsrFirstRunGate(child: AppShell()),
     );
   }
 }

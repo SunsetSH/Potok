@@ -148,14 +148,8 @@ void main() {
 
     test('appendImage rejects an invalid assetId', () {
       final document = PotokDocument.fromPlainText('текст');
-      expect(
-        () => document.appendImage('bad/id'),
-        throwsArgumentError,
-      );
-      expect(
-        () => document.appendImage(''),
-        throwsArgumentError,
-      );
+      expect(() => document.appendImage('bad/id'), throwsArgumentError);
+      expect(() => document.appendImage(''), throwsArgumentError);
     });
 
     test('deep-copies nested ops three levels deep', () {
