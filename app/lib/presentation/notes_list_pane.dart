@@ -98,10 +98,14 @@ class _NotesListPaneState extends ConsumerState<NotesListPane> {
       messenger.showSnackBar(
         PotokSnackBar(content: Text('Изменено заметок: ${notes.length}')),
       );
-    } on StateError {
+    } on StateError catch (error) {
       messenger.showSnackBar(
         PotokSnackBar(
-          content: Text('Часть заметок изменилась — операция отменена целиком'),
+          content: Text(
+            error.message == 'target project unavailable'
+                ? 'Проект уже удалён — операция отменена'
+                : 'Часть заметок изменилась — операция отменена целиком',
+          ),
         ),
       );
     } catch (error) {
@@ -197,11 +201,13 @@ class _NotesListPaneState extends ConsumerState<NotesListPane> {
       messenger.showSnackBar(
         PotokSnackBar(content: Text('Тег добавлен заметкам: ${notes.length}')),
       );
-    } on StateError {
+    } on StateError catch (error) {
       messenger.showSnackBar(
         PotokSnackBar(
           content: Text(
-            'Заметки или тег изменились — операция отменена целиком',
+            error.message == 'tag unavailable'
+                ? 'Тег уже удалён — операция отменена'
+                : 'Заметки или тег изменились — операция отменена целиком',
           ),
         ),
       );
@@ -547,6 +553,9 @@ class _NotesScroll extends ConsumerWidget {
       return const Center(child: CircularProgressIndicator());
     }
 
+    // notes != null в режиме списка означает, что страница загружена.
+    final pagedState = page?.value;
+
     if (notes.isEmpty) {
       return Center(
         child: Text(
@@ -610,7 +619,7 @@ class _NotesScroll extends ConsumerWidget {
       );
     }
 
-    if (!searching && page!.value!.loadingMore) {
+    if (!searching && pagedState != null && pagedState.loadingMore) {
       children.add(
         const Padding(
           padding: EdgeInsets.all(16),
@@ -628,7 +637,8 @@ class _NotesScroll extends ConsumerWidget {
       onNotification: (notification) {
         if (!searching &&
             notification.metrics.extentAfter < 600 &&
-            page!.value!.hasMore) {
+            pagedState != null &&
+            pagedState.hasMore) {
           unawaited(ref.read(pagedSectionNotesProvider.notifier).loadMore());
         }
         return false;
@@ -1328,15 +1338,39 @@ Future<void> showNoteListSettingsSheet(
   );
 }
 
-Future<String?> _promptSmartViewName(BuildContext context) async {
-  final controller = TextEditingController();
-  final result = await showDialog<String>(
+Future<String?> _promptSmartViewName(BuildContext context) {
+  return showDialog<String>(
     context: context,
-    builder: (dialogContext) => AlertDialog(
+    builder: (dialogContext) => const _SmartViewNameDialog(),
+  );
+}
+
+/// Owns the name controller as widget state so it is only disposed once the
+/// dialog Element itself is unmounted, not on a timer racing the close
+/// animation.
+class _SmartViewNameDialog extends StatefulWidget {
+  const _SmartViewNameDialog();
+
+  @override
+  State<_SmartViewNameDialog> createState() => _SmartViewNameDialogState();
+}
+
+class _SmartViewNameDialogState extends State<_SmartViewNameDialog> {
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
       title: const Text('Сохранить представление'),
       content: TextField(
         key: const ValueKey('smart-view-name'),
-        controller: controller,
+        controller: _controller,
         autofocus: true,
         maxLength: 120,
         decoration: const InputDecoration(
@@ -1344,28 +1378,25 @@ Future<String?> _promptSmartViewName(BuildContext context) async {
           hintText: 'Например, открытые риски',
         ),
         onSubmitted: (value) {
-          if (value.trim().isNotEmpty) Navigator.pop(dialogContext, value);
+          if (value.trim().isNotEmpty) Navigator.pop(context, value);
         },
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.pop(dialogContext),
+          onPressed: () => Navigator.pop(context),
           child: const Text('Отмена'),
         ),
         FilledButton(
           key: const ValueKey('confirm-smart-view'),
           onPressed: () {
-            final value = controller.text.trim();
-            if (value.isNotEmpty) Navigator.pop(dialogContext, value);
+            final value = _controller.text.trim();
+            if (value.isNotEmpty) Navigator.pop(context, value);
           },
           child: const Text('Сохранить'),
         ),
       ],
-    ),
-  );
-  await Future<void>.delayed(const Duration(milliseconds: 300));
-  controller.dispose();
-  return result;
+    );
+  }
 }
 
 String _shortDate(int utcMillis) {

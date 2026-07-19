@@ -191,10 +191,16 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
       );
     }
     if (_draftDirty && widget.attachToNote == null) {
+      // Черновик пишем после финализации записи: параллельный teardown
+      // недетерминирован, а порядок «сначала заметка, потом черновик»
+      // согласован с _finishRecordingImpl.
+      final beforeDraft = recorderOwner ?? Future<void>.value();
       unawaited(
-        _saveDraftNow().catchError((Object e) {
-          debugPrint('draft flush failed: ${e.runtimeType}');
-        }),
+        beforeDraft
+            .then((_) => _saveDraftNow())
+            .catchError((Object e) {
+              debugPrint('draft flush failed: ${e.runtimeType}');
+            }),
       );
     }
     if (recorderOwner == null) {
@@ -729,6 +735,9 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
     required String comment,
   }) async {
     if (service == null) {
+      // Сервис недоступен в момент уничтожения route ОС — заметка из этой
+      // записи не будет создана. Фиксируем потерю явно, не молча.
+      debugPrint('detached finalize skipped: notes service unavailable, recording lost');
       await _stopLivePreview();
       await _recorder.cancel();
       return;

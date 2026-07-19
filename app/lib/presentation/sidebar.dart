@@ -68,7 +68,11 @@ class _SidebarState extends ConsumerState<Sidebar> {
   void _autoScrollProjects(Offset globalPosition) {
     if (!_projectsScroll.hasClients) return;
     final renderObject = _projectsListKey.currentContext?.findRenderObject();
-    if (renderObject is! RenderBox) return;
+    if (renderObject is! RenderBox ||
+        !renderObject.attached ||
+        !renderObject.hasSize) {
+      return;
+    }
     final local = renderObject.globalToLocal(globalPosition);
     const edge = 48.0;
     const step = 18.0;

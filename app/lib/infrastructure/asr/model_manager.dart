@@ -129,6 +129,18 @@ class AsrModelManager implements ActiveModelLocator {
   static const manifestFileName = 'potok-model.json';
   static const activeModelKey = 'asr.active_model';
   static const _partialSuffix = '.partial';
+  static const _backupSuffix = '.old';
+
+  /// Мьютекс по model_id: конкурентные установки одного пака сериализуются,
+  /// иначе они делят один `<id>.partial` и рушат rename друг друга.
+  final Map<String, Future<void>> _installLocks = {};
+
+  Future<T> _withInstallLock<T>(String modelId, Future<T> Function() action) {
+    final previous = _installLocks[modelId] ?? Future<void>.value();
+    final result = previous.then((_) => action());
+    _installLocks[modelId] = result.then((_) {}, onError: (_) {});
+    return result;
+  }
 
   final Directory modelsRoot;
   final SettingsService settings;
@@ -226,47 +238,66 @@ class AsrModelManager implements ActiveModelLocator {
     return _installFiles(source, manifest);
   }
 
-  Future<String> _installFiles(Directory source, ModelManifest manifest) async {
-    await modelsRoot.create(recursive: true);
-    final partial = Directory(
-      p.join(modelsRoot.path, manifest.modelId + _partialSuffix),
-    );
-    try {
-      if (partial.existsSync()) {
-        await partial.delete(recursive: true);
-      }
-      await partial.create(recursive: true);
-      for (final entry in manifest.files.entries) {
-        final sourceFile = File(p.join(source.path, entry.key));
-        if (!sourceFile.existsSync()) {
-          throw ModelPackException('в пакете нет файла ${entry.key}');
+  Future<String> _installFiles(Directory source, ModelManifest manifest) {
+    return _withInstallLock(manifest.modelId, () async {
+      await modelsRoot.create(recursive: true);
+      final partial = Directory(
+        p.join(modelsRoot.path, manifest.modelId + _partialSuffix),
+      );
+      try {
+        if (partial.existsSync()) {
+          await partial.delete(recursive: true);
         }
-        final copied = await sourceFile.copy(p.join(partial.path, entry.key));
-        // Hash считается по копии: проверяем и исходник, и сам перенос.
-        final actual = await _sha256Hex(copied);
-        if (actual != entry.value) {
-          throw ModelPackException(
-            'контрольная сумма не совпадает: ${entry.key}',
-          );
+        await partial.create(recursive: true);
+        for (final entry in manifest.files.entries) {
+          final sourceFile = File(p.join(source.path, entry.key));
+          if (!sourceFile.existsSync()) {
+            throw ModelPackException('в пакете нет файла ${entry.key}');
+          }
+          final copied = await sourceFile.copy(p.join(partial.path, entry.key));
+          // Hash считается по копии: проверяем и исходник, и сам перенос.
+          final actual = await _sha256Hex(copied);
+          if (actual != entry.value) {
+            throw ModelPackException(
+              'контрольная сумма не совпадает: ${entry.key}',
+            );
+          }
         }
-      }
-      await File(
-        p.join(partial.path, manifestFileName),
-      ).writeAsString(json.encode(manifest.toJson()), flush: true);
+        await File(
+          p.join(partial.path, manifestFileName),
+        ).writeAsString(json.encode(manifest.toJson()), flush: true);
 
-      final target = Directory(p.join(modelsRoot.path, manifest.modelId));
-      if (target.existsSync()) {
-        // Переустановка: старую версию заменяет полностью проверенный пак.
-        await target.delete(recursive: true);
+        final target = Directory(p.join(modelsRoot.path, manifest.modelId));
+        final backup = Directory(target.path + _backupSuffix);
+        if (backup.existsSync()) {
+          await backup.delete(recursive: true);
+        }
+        // Переустановка без окна потери модели: старая версия уходит в
+        // `<id>.old`, встаёт проверенный пак, и только потом бэкап удаляется.
+        var movedOld = false;
+        if (target.existsSync()) {
+          await target.rename(backup.path);
+          movedOld = true;
+        }
+        try {
+          await partial.rename(target.path);
+        } catch (e) {
+          if (movedOld && backup.existsSync() && !target.existsSync()) {
+            await backup.rename(target.path);
+          }
+          rethrow;
+        }
+        if (movedOld && backup.existsSync()) {
+          await backup.delete(recursive: true);
+        }
+        return manifest.modelId;
+      } catch (e) {
+        if (partial.existsSync()) {
+          await partial.delete(recursive: true);
+        }
+        rethrow;
       }
-      await partial.rename(target.path);
-      return manifest.modelId;
-    } catch (e) {
-      if (partial.existsSync()) {
-        await partial.delete(recursive: true);
-      }
-      rethrow;
-    }
+    });
   }
 
   /// Валидные установленные паки. Битые папки пропускаются, но не удаляются
@@ -277,7 +308,9 @@ class AsrModelManager implements ActiveModelLocator {
     await for (final entry in modelsRoot.list()) {
       if (entry is! Directory) continue;
       final name = p.basename(entry.path);
-      if (name.endsWith(_partialSuffix)) continue;
+      if (name.endsWith(_partialSuffix) || name.endsWith(_backupSuffix)) {
+        continue;
+      }
       final manifest = await _readInstalledManifest(name);
       if (manifest != null) manifests.add(manifest);
     }
@@ -293,6 +326,11 @@ class AsrModelManager implements ActiveModelLocator {
   /// файлов проверяется повторно; несовпадение — [ModelPackException],
   /// активная модель не меняется.
   Future<void> activate(String modelId) async {
+    // model_id участвует в p.join: разделители путей и прочий мусор
+    // отсекаются до обращения к диску (path traversal).
+    if (!ModelManifest._safeName.hasMatch(modelId)) {
+      throw const ModelPackException('некорректный model_id');
+    }
     final dir = Directory(p.join(modelsRoot.path, modelId));
     final manifestFile = File(p.join(dir.path, manifestFileName));
     if (!manifestFile.existsSync()) {

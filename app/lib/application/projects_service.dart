@@ -60,8 +60,13 @@ class ProjectsService {
     return id;
   }
 
-  Future<void> rename(Project project, String newName) =>
-      _update(project, ProjectsCompanion(name: Value(newName.trim())));
+  Future<void> rename(Project project, String newName) {
+    final trimmed = newName.trim();
+    if (trimmed.isEmpty || trimmed.length > 120) {
+      throw ArgumentError('project name must be 1..120 chars');
+    }
+    return _update(project, ProjectsCompanion(name: Value(trimmed)));
+  }
 
   Future<void> setPinned(Project project, bool pinned) =>
       _update(project, ProjectsCompanion(isPinned: Value(pinned)));
@@ -89,6 +94,27 @@ class ProjectsService {
               );
       if (updated == 0) {
         throw StateError('project was modified concurrently, retry');
+      }
+      await _journal(
+        entityKind: 'project',
+        entityId: project.id,
+        baseRevision: project.revision,
+        newRevision: project.revision + 1,
+        operationKind: 'project.delete',
+        at: now,
+      );
+      // Project-теги удалённого проекта теряют смысл — снимаем их со всех
+      // заметок (инвариант как drop в NotesService.moveToProject).
+      final projectTagIds =
+          (await (db.select(
+                db.tags,
+              )..where((t) => t.projectId.equals(project.id))).get())
+              .map((t) => t.id)
+              .toList(growable: false);
+      if (projectTagIds.isNotEmpty) {
+        await (db.delete(
+          db.noteTags,
+        )..where((nt) => nt.tagId.isIn(projectTagIds))).go();
       }
       final orphans =
           await (db.select(db.notes)..where(
@@ -118,8 +144,40 @@ class ProjectsService {
                 ),
               ),
             );
+        await _journal(
+          entityKind: 'note',
+          entityId: note.id,
+          baseRevision: note.revision,
+          newRevision: note.revision + 1,
+          operationKind: 'note.move',
+          at: now,
+        );
       }
     });
+  }
+
+  Future<void> _journal({
+    required String entityKind,
+    required String entityId,
+    required int? baseRevision,
+    required int? newRevision,
+    required String operationKind,
+    required int at,
+  }) {
+    return db
+        .into(db.operationJournal)
+        .insert(
+          OperationJournalCompanion.insert(
+            operationId: ids.newId(),
+            deviceId: deviceId,
+            entityKind: entityKind,
+            entityId: entityId,
+            baseRevision: Value(baseRevision),
+            newRevision: Value(newRevision),
+            operationKind: operationKind,
+            occurredAtUtc: at,
+          ),
+        );
   }
 
   Future<void> _update(Project project, ProjectsCompanion changes) async {

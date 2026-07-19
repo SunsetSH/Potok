@@ -28,8 +28,17 @@ class BundledModelInstaller {
 
     final installed = await manager.installedManifest(modelId);
     if (installed != null) {
-      await manager.activate(modelId);
-      return;
+      try {
+        await manager.activate(modelId);
+        return;
+      } on ModelPackException {
+        // Битый установленный bundled-пак не должен блокировать bootstrap
+        // навсегда: удаляем и переустанавливаем из assets.
+        final broken = Directory(p.join(manager.modelsRoot.path, modelId));
+        if (broken.existsSync()) {
+          await broken.delete(recursive: true);
+        }
+      }
     }
 
     final bootstrapRoot = Directory(

@@ -40,8 +40,15 @@ class PotokDocument {
       throw FormatException('unknown document schema: ${raw['schema']}');
     }
     final version = raw['version'];
-    if (version is! int || version < 1 || version > currentVersion) {
+    if (version is! int || version < 1) {
       throw FormatException('unsupported document version: $version');
+    }
+    if (version > currentVersion) {
+      throw FormatException('unsupported newer document version: $version');
+    }
+    final format = raw['format'];
+    if (format != null && format != deltaFormat) {
+      throw FormatException('unsupported document delta format: $format');
     }
     final delta = raw['delta'];
     final ops = (delta is Map<String, Object?>) ? delta['ops'] : null;

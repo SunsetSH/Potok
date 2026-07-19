@@ -125,7 +125,8 @@ class MediaStore {
             header[7] == 0x70;
       }
       if (extension == '.wav') {
-        return header[0] == 0x52 &&
+        final riffWave =
+            header[0] == 0x52 &&
             header[1] == 0x49 &&
             header[2] == 0x46 &&
             header[3] == 0x46 &&
@@ -133,6 +134,21 @@ class MediaStore {
             header[9] == 0x41 &&
             header[10] == 0x56 &&
             header[11] == 0x45;
+        if (!riffWave) return false;
+        // Наши записи — канонический 44-байтовый заголовок с 'data' на 36-м
+        // байте: сверяем заявленный data-size с фактическим размером, чтобы
+        // WAV c «обещанными», но не записанными байтами не стал ready.
+        final rest = await handle.read(32);
+        if (rest.length < 32) return false;
+        final isDataChunk =
+            rest[24] == 0x64 && // 'd'
+            rest[25] == 0x61 && // 'a'
+            rest[26] == 0x74 && // 't'
+            rest[27] == 0x61; // 'a'
+        if (!isDataChunk) return true; // нестандартный layout — не проверяем
+        final dataSize =
+            rest[28] | (rest[29] << 8) | (rest[30] << 16) | (rest[31] << 24);
+        return await file.length() >= 44 + dataSize;
       }
       return false;
     } finally {

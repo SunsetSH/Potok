@@ -92,6 +92,92 @@ void main() {
       ]);
     });
 
+    test('rejects mismatched delta format', () {
+      expect(
+        () => PotokDocument.decode(
+          '{"schema":"potok.document","version":1,'
+          '"format":"other-format","delta":{"ops":[]}}',
+        ),
+        throwsFormatException,
+      );
+    });
+
+    test('accepts missing format field for backward compatibility', () {
+      final decoded = PotokDocument.decode(
+        '{"schema":"potok.document","version":1,"delta":{"ops":[]}}',
+      );
+      expect(decoded.plainText, '');
+    });
+
+    test('distinguishes an unsupported newer version from corrupt data', () {
+      expect(
+        () => PotokDocument.decode(
+          '{"schema":"potok.document","version":99,"delta":{"ops":[]}}',
+        ),
+        throwsA(
+          isA<FormatException>().having(
+            (e) => e.message,
+            'message',
+            contains('newer'),
+          ),
+        ),
+      );
+      expect(
+        () => PotokDocument.decode(
+          '{"schema":"potok.document","version":0,"delta":{"ops":[]}}',
+        ),
+        throwsFormatException,
+      );
+    });
+
+    test('rejects a document missing the delta entirely', () {
+      expect(
+        () => PotokDocument.decode(
+          '{"schema":"potok.document","version":1,"format":"quill-delta"}',
+        ),
+        throwsFormatException,
+      );
+    });
+
+    test('rejects syntactically invalid JSON', () {
+      expect(
+        () => PotokDocument.decode('{not valid json'),
+        throwsFormatException,
+      );
+    });
+
+    test('appendImage rejects an invalid assetId', () {
+      final document = PotokDocument.fromPlainText('текст');
+      expect(
+        () => document.appendImage('bad/id'),
+        throwsArgumentError,
+      );
+      expect(
+        () => document.appendImage(''),
+        throwsArgumentError,
+      );
+    });
+
+    test('deep-copies nested ops three levels deep', () {
+      final nested = <String, Object?>{
+        'level2': <String, Object?>{
+          'level3': <String, Object?>{'value': 'исходное'},
+        },
+      };
+      final source = <String, Object?>{'insert': 'x', 'level1': nested};
+      final document = PotokDocument.fromDeltaOps([source]);
+
+      (((nested['level2'] as Map<String, Object?>)['level3']
+              as Map<String, Object?>))['value'] =
+          'изменено';
+
+      final exported = document.deltaOps.single;
+      final level1 = exported['level1'] as Map<String, Object?>;
+      final level2 = level1['level2'] as Map<String, Object?>;
+      final level3 = level2['level3'] as Map<String, Object?>;
+      expect(level3['value'], 'исходное');
+    });
+
     test('rejects non-object Delta operations', () {
       expect(
         () => PotokDocument.decode(

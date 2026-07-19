@@ -150,7 +150,7 @@ SELECT
   SUM(CASE WHEN deleted_at_utc IS NULL THEN 1 ELSE 0 END) AS total_count,
   SUM(CASE WHEN deleted_at_utc IS NULL AND project_id IS NULL THEN 1 ELSE 0 END) AS no_project_count,
   SUM(CASE WHEN deleted_at_utc IS NULL AND is_favorite = 1 THEN 1 ELSE 0 END) AS favorite_count,
-  SUM(CASE WHEN deleted_at_utc IS NOT NULL THEN 1 ELSE 0 END) AS trash_count
+  SUM(CASE WHEN deleted_at_utc IS NOT NULL AND is_hidden = 0 THEN 1 ELSE 0 END) AS trash_count
 FROM notes
 ''',
           readsFrom: {db.notes},
@@ -310,7 +310,7 @@ GROUP BY project_id
       NoteSortField.createdAt => n.createdAtUtc,
       NoteSortField.updatedAt => n.updatedAtUtc,
       NoteSortField.eventAt => ifNull(n.eventAtUtc, n.createdAtUtc),
-      NoteSortField.title => n.documentPlainText.collate(Collate.noCase),
+      NoteSortField.title => _titleSortExpression,
       NoteSortField.project => db.projects.name.collate(Collate.noCase),
     };
     final mode = order.direction == NoteSortDirection.ascending
@@ -370,7 +370,7 @@ GROUP BY project_id
         _requireCursor<int>(cursor, order.field),
       ),
       NoteSortField.title => compareText(
-        n.documentPlainText.collate(Collate.noCase),
+        _titleSortExpression,
         _requireCursor<String>(cursor, order.field),
       ),
       NoteSortField.project => _projectCursorPredicate(cursor, ascending),
@@ -413,9 +413,26 @@ GROUP BY project_id
       NoteSortField.createdAt => note.createdAtUtc,
       NoteSortField.updatedAt => note.updatedAtUtc,
       NoteSortField.eventAt => note.eventAtUtc ?? note.createdAtUtc,
-      NoteSortField.title => note.documentPlainText,
+      NoteSortField.title => note.title ?? _titleSortFallback(note.documentPlainText),
       NoteSortField.project => project?.name,
     };
+  }
+
+  /// Сортировка «Заголовок»: явный title, иначе усечённое начало текста —
+  /// курсор не таскает весь plain text.
+  static const _titleSortFallbackLength = 64;
+
+  Expression<String> get _titleSortExpression => ifNull(
+    db.notes.title,
+    db.notes.documentPlainText.substr(1, _titleSortFallbackLength),
+  ).collate(Collate.noCase);
+
+  static String _titleSortFallback(String text) {
+    if (text.length <= _titleSortFallbackLength) return text;
+    var end = _titleSortFallbackLength;
+    // Не разрезаем суррогатную пару на границе.
+    if ((text.codeUnitAt(end) & 0xFC00) == 0xDC00) end--;
+    return text.substring(0, end);
   }
 
   Stream<MediaAsset?> watchReadyAudioAsset(String noteId) {
@@ -581,6 +598,7 @@ GROUP BY project_id
             documentJson: const PotokDocument.empty().encode(),
             documentPlainText: '',
             sourceKind: sourceKind,
+            isHidden: const Value(true),
             createdAtUtc: now,
             updatedAtUtc: now,
             deletedAtUtc: Value(now),
@@ -592,7 +610,10 @@ GROUP BY project_id
   Future<Note?> findImageNoteDraft() {
     final query = db.select(db.notes)
       ..where(
-        (n) => n.title.equals(_imageDraftTitle) & n.deletedAtUtc.isNotNull(),
+        (n) =>
+            n.isHidden.equals(true) &
+            n.title.equals(_imageDraftTitle) &
+            n.deletedAtUtc.isNotNull(),
       )
       ..orderBy([(n) => OrderingTerm.desc(n.updatedAtUtc)])
       ..limit(1);
@@ -610,7 +631,7 @@ GROUP BY project_id
               (n) =>
                   n.id.equals(draft.id) &
                   n.revision.equals(draft.revision) &
-                  n.title.equals(_imageDraftTitle),
+                  n.isHidden.equals(true),
             ))
             .write(
               NotesCompanion(
@@ -655,7 +676,7 @@ GROUP BY project_id
                 (n) =>
                     n.id.equals(draft.id) &
                     n.revision.equals(draft.revision) &
-                    n.title.equals(_imageDraftTitle),
+                    n.isHidden.equals(true),
               ))
               .write(
                 NotesCompanion(
@@ -665,6 +686,7 @@ GROUP BY project_id
                   projectId: Value(projectId),
                   documentJson: Value(document.encode()),
                   documentPlainText: Value(document.plainText),
+                  isHidden: const Value(false),
                   deletedAtUtc: const Value(null),
                   updatedAtUtc: Value(now),
                   revision: Value(draft.revision + 1),
@@ -689,7 +711,7 @@ GROUP BY project_id
 
   Future<void> discardImageNoteDraft(Note draft) async {
     await (db.delete(db.notes)..where(
-          (n) => n.id.equals(draft.id) & n.title.equals(_imageDraftTitle),
+          (n) => n.id.equals(draft.id) & n.isHidden.equals(true),
         ))
         .go();
   }
@@ -718,6 +740,7 @@ GROUP BY project_id
                 documentJson: const PotokDocument.empty().encode(),
                 documentPlainText: '',
                 sourceKind: sourceKind,
+                isHidden: const Value(true),
                 createdAtUtc: now,
                 updatedAtUtc: now,
                 deletedAtUtc: Value(now),
@@ -908,6 +931,7 @@ GROUP BY project_id
           db.notes,
         )..where((n) => n.id.equals(staged.noteId))).write(
           NotesCompanion(
+            isHidden: const Value(false),
             deletedAtUtc: const Value(null),
             updatedAtUtc: Value(now),
           ),
@@ -1642,7 +1666,7 @@ GROUP BY project_id
 
   Stream<List<Note>> watchTrash() {
     final query = db.select(db.notes)
-      ..where((n) => n.deletedAtUtc.isNotNull())
+      ..where((n) => n.deletedAtUtc.isNotNull() & n.isHidden.equals(false))
       ..orderBy([(n) => OrderingTerm.desc(n.deletedAtUtc)]);
     return query.watch();
   }
@@ -1655,7 +1679,10 @@ GROUP BY project_id
       throw ArgumentError.value(pageSize, 'pageSize', 'must be from 1 to 200');
     }
     final n = db.notes;
-    final query = db.select(n)..where((row) => row.deletedAtUtc.isNotNull());
+    final query = db.select(n)
+      ..where(
+        (row) => row.deletedAtUtc.isNotNull() & row.isHidden.equals(false),
+      );
     if (after != null) {
       final deletedAt = _requireCursor<int>(after, NoteSortField.updatedAt);
       query.where(

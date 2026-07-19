@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:record/record.dart';
 
@@ -30,6 +31,16 @@ enum AudioRecorderStartFailure { permission, device, unsupported, platform }
 class AudioRecorderStartException implements Exception {
   final AudioRecorderStartFailure failure;
   const AudioRecorderStartException(this.failure);
+}
+
+/// A disk write failed during PCM capture: the staged WAV is unusable and
+/// has been discarded, so stop() must not report success.
+class AudioRecorderWriteException implements Exception {
+  final Object cause;
+  const AudioRecorderWriteException(this.cause);
+
+  @override
+  String toString() => 'AudioRecorderWriteException: $cause';
 }
 
 class RecorderLevel {
@@ -65,9 +76,21 @@ class RecordAudioRecorderAdapter implements AudioRecorderPort {
   int _wavDataBytes = 0;
   Future<void> _writeQueue = Future<void>.value();
   Completer<void>? _recordStreamDone;
+  Object? _writeFailure;
 
-  RecordAudioRecorderAdapter({AudioRecorder? recorder})
-    : _recorder = recorder ?? AudioRecorder();
+  /// [wavFileOpener] подменяет открытие WAV-файла в тестах (симуляция сбоев
+  /// диска); в продакшене всегда обычный [File.open].
+  RecordAudioRecorderAdapter({
+    AudioRecorder? recorder,
+    @visibleForTesting
+    Future<RandomAccessFile> Function(String path)? wavFileOpener,
+  }) : _recorder = recorder ?? AudioRecorder(),
+       _openWavFile = wavFileOpener ?? _defaultOpenWavFile;
+
+  final Future<RandomAccessFile> Function(String path) _openWavFile;
+
+  static Future<RandomAccessFile> _defaultOpenWavFile(String path) =>
+      File(path).open(mode: FileMode.write);
 
   @override
   Future<bool> hasPermission() => _recorder.hasPermission();
@@ -130,7 +153,7 @@ class RecordAudioRecorderAdapter implements AudioRecorderPort {
   }
 
   Future<void> _startPcmWav(String path, RecordConfig config) async {
-    final file = await File(path).open(mode: FileMode.write);
+    final file = await _openWavFile(path);
     await file.writeFrom(buildPcm16WavHeader(dataBytes: 0));
     final controller = StreamController<Uint8List>.broadcast(sync: true);
     final levelController = StreamController<RecorderLevel>.broadcast(
@@ -148,8 +171,19 @@ class RecordAudioRecorderAdapter implements AudioRecorderPort {
       _recordStreamSubscription = stream.listen(
         (chunk) {
           if (chunk.isEmpty) return;
-          _wavDataBytes += chunk.length;
-          _writeQueue = _writeQueue.then((_) => file.writeFrom(chunk));
+          if (_writeFailure == null) {
+            // Байты учитываются только после успешной записи, а ошибка диска
+            // фиксируется флагом: цепочка очереди никогда не «залипает» на
+            // необработанном Future, а stop() не выдаёт битый WAV за успех.
+            _writeQueue = _writeQueue
+                .then((_) => file.writeFrom(chunk))
+                .then((_) {
+                  _wavDataBytes += chunk.length;
+                })
+                .catchError((Object error) {
+                  _writeFailure ??= error;
+                });
+          }
           controller.add(Uint8List.fromList(chunk));
           levelController.add(RecorderLevel(pcm16RmsLevel(chunk)));
         },
@@ -162,9 +196,13 @@ class RecordAudioRecorderAdapter implements AudioRecorderPort {
         },
       );
     } catch (_) {
-      await file.close();
+      try {
+        await file.close();
+      } catch (_) {}
       await controller.close();
       await levelController.close();
+      final created = File(path);
+      if (created.existsSync()) await created.delete();
       rethrow;
     }
   }
@@ -179,24 +217,40 @@ class RecordAudioRecorderAdapter implements AudioRecorderPort {
   Future<String?> stop() async {
     final path = _wavPath;
     if (path == null) return _recorder.stop();
-    await _recorder.stop();
-    final done = _recordStreamDone;
-    if (done != null && !done.isCompleted) {
-      try {
-        await done.future.timeout(const Duration(seconds: 2));
-      } on TimeoutException {
-        await _recordStreamSubscription?.cancel();
+    Object? failure;
+    try {
+      await _recorder.stop();
+      final done = _recordStreamDone;
+      if (done != null && !done.isCompleted) {
+        try {
+          await done.future.timeout(const Duration(seconds: 2));
+        } on TimeoutException {
+          await _recordStreamSubscription?.cancel();
+        }
       }
+      await _writeQueue;
+      failure = _writeFailure;
+      final file = _wavFile;
+      if (file != null && failure == null) {
+        await file.setPosition(0);
+        await file.writeFrom(buildPcm16WavHeader(dataBytes: _wavDataBytes));
+        await file.flush();
+      }
+    } finally {
+      // Даже при PlatformException от платформенного stop состояние адаптера
+      // откатывается: файл закрыт, контроллеры закрыты, поля сброшены.
+      await _writeQueue;
+      try {
+        await _wavFile?.close();
+      } catch (_) {}
+      failure ??= _writeFailure;
+      await _closePcmState();
     }
-    await _writeQueue;
-    final file = _wavFile;
-    if (file != null) {
-      await file.setPosition(0);
-      await file.writeFrom(buildPcm16WavHeader(dataBytes: _wavDataBytes));
-      await file.flush();
-      await file.close();
+    if (failure != null) {
+      final broken = File(path);
+      if (broken.existsSync()) await broken.delete();
+      throw AudioRecorderWriteException(failure);
     }
-    await _closePcmState();
     return path;
   }
 
@@ -206,7 +260,9 @@ class RecordAudioRecorderAdapter implements AudioRecorderPort {
     await _recorder.cancel();
     await _recordStreamSubscription?.cancel();
     await _writeQueue;
-    await _wavFile?.close();
+    try {
+      await _wavFile?.close();
+    } catch (_) {}
     await _closePcmState();
     if (path != null) {
       final file = File(path);
@@ -235,7 +291,10 @@ class RecordAudioRecorderAdapter implements AudioRecorderPort {
   @override
   Future<void> dispose() async {
     await _recordStreamSubscription?.cancel();
-    await _wavFile?.close();
+    await _writeQueue;
+    try {
+      await _wavFile?.close();
+    } catch (_) {}
     await _closePcmState();
     await _recorder.dispose();
   }
@@ -251,6 +310,7 @@ class RecordAudioRecorderAdapter implements AudioRecorderPort {
     _wavDataBytes = 0;
     _recordStreamDone = null;
     _writeQueue = Future<void>.value();
+    _writeFailure = null;
     if (controller != null && !controller.isClosed) await controller.close();
     if (levelController != null && !levelController.isClosed) {
       await levelController.close();
@@ -260,21 +320,42 @@ class RecordAudioRecorderAdapter implements AudioRecorderPort {
   static AudioRecorderStartFailure _classifyStartFailure(
     PlatformException error,
   ) {
+    // Сначала машинные признаки (error.code, hex/decimal HRESULT), затем
+    // англоязычные подстроки message как fallback.
+    final code = error.code.toLowerCase();
     final details = '${error.code} ${error.message} ${error.details}'
         .toLowerCase();
-    if (details.contains('access denied') ||
-        details.contains('permission') ||
-        details.contains('0x80070005')) {
+    if (code.contains('permission') ||
+        code.contains('denied') ||
+        // E_ACCESSDENIED
+        details.contains('0x80070005') ||
+        details.contains('-2147024891')) {
       return AudioRecorderStartFailure.permission;
     }
-    if (details.contains('not implemented') ||
-        details.contains('unsupported') ||
-        details.contains('0x80004001')) {
+    if (code.contains('unsupported') ||
+        code.contains('notimplemented') ||
+        code.contains('not_implemented') ||
+        // E_NOTIMPL
+        details.contains('0x80004001') ||
+        details.contains('-2147467263')) {
       return AudioRecorderStartFailure.unsupported;
     }
-    if (details.contains('device') ||
-        details.contains('not found') ||
-        details.contains('0x80070490')) {
+    if (code.contains('device') ||
+        code.contains('notfound') ||
+        code.contains('not_found') ||
+        // ERROR_NOT_FOUND / AUDCLNT_E_DEVICE_INVALIDATED
+        details.contains('0x80070490') ||
+        details.contains('-2147023728') ||
+        details.contains('0x88890004')) {
+      return AudioRecorderStartFailure.device;
+    }
+    if (details.contains('access denied') || details.contains('permission')) {
+      return AudioRecorderStartFailure.permission;
+    }
+    if (details.contains('not implemented') || details.contains('unsupported')) {
+      return AudioRecorderStartFailure.unsupported;
+    }
+    if (details.contains('device') || details.contains('not found')) {
       return AudioRecorderStartFailure.device;
     }
     return AudioRecorderStartFailure.platform;

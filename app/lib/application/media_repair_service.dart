@@ -199,10 +199,14 @@ class MediaRepairService {
     )) {
       if (entity is! File || !entity.path.endsWith('.partial')) continue;
       if (known.contains(p.normalize(entity.path))) continue;
-      final modified = entity.lastModifiedSync();
-      if (modified.toUtc().millisecondsSinceEpoch > cutoffMillis) continue;
-      await entity.delete();
-      removed++;
+      try {
+        final modified = entity.lastModifiedSync();
+        if (modified.toUtc().millisecondsSinceEpoch > cutoffMillis) continue;
+        await entity.delete();
+        removed++;
+      } on FileSystemException {
+        // Файл исчез или занят — пропускаем, приберём в следующий запуск.
+      }
     }
     return removed;
   }

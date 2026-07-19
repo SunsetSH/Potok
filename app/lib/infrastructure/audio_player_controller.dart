@@ -64,6 +64,11 @@ class JustAudioPlaybackController extends AudioPlaybackController {
 
   @override
   Future<void> open(String path) async {
+    // Повторный open не накапливает подписки: старые отменяются заранее.
+    for (final subscription in _subscriptions) {
+      unawaited(subscription.cancel());
+    }
+    _subscriptions.clear();
     try {
       _update(
         loading: true,
@@ -159,10 +164,13 @@ class JustAudioPlaybackController extends AudioPlaybackController {
 
   @override
   Future<void> seek(Duration position) async {
+    // duration == zero означает «ещё неизвестна», а не пустой файл: сверху в
+    // этом случае не клэмпим, иначе seek/skip всегда сбрасывали бы в 0.
+    final duration = _state.duration;
     final bounded = position < Duration.zero
         ? Duration.zero
-        : position > _state.duration
-        ? _state.duration
+        : (duration > Duration.zero && position > duration)
+        ? duration
         : position;
     // UI не ждёт запаздывающее Windows MediaPlayer event: после явного seek
     // thumb немедленно занимает выбранную позицию.

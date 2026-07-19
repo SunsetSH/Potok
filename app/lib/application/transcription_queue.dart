@@ -94,7 +94,7 @@ class TranscriptionQueue {
     );
   }
 
-  /// queued/recognizing → cancelled. Возвращает false, если ревизия уже в
+  /// queued/recognizing/waitingForModel → cancelled. Возвращает false, если ревизия уже в
   /// финальном состоянии. Изолят recognizing не прерывается — его результат
   /// отбрасывает stale-guard.
   Future<bool> cancel(String revisionId) async {
@@ -105,6 +105,7 @@ class TranscriptionQueue {
                   r.state.isInValues(const [
                     TranscriptState.queued,
                     TranscriptState.recognizing,
+                    TranscriptState.waitingForModel,
                   ]),
             ))
             .write(
@@ -232,7 +233,12 @@ class TranscriptionQueue {
                 ),
               );
       if (changed > 0 && result.text.trim().isNotEmpty) {
-        await onTranscriptReady?.call(revision.noteId, result.text);
+        try {
+          await onTranscriptReady?.call(revision.noteId, result.text);
+        } catch (_) {
+          // Ревизия уже ready: сбой колбэка (например, гонка ревизий заметки)
+          // не должен ни валить job, ни останавливать очередь.
+        }
       }
     } on ModelUnavailableException {
       // Модель пропала между activeModelDir() и запуском движка.

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:drift/native.dart';
@@ -51,9 +52,10 @@ void main() {
     MediaAsset? audioAsset,
     AudioPlaybackController Function()? playerFactory,
     ClipboardImageReader? clipboardReader,
+    NotesService? service,
   }) => ProviderScope(
     overrides: [
-      notesServiceProvider.overrideWithValue(AsyncData(notes)),
+      notesServiceProvider.overrideWithValue(AsyncData(service ?? notes)),
       selectedNoteProvider.overrideWith((ref) => selected),
       projectsProvider.overrideWith((ref) => Stream.value(const [])),
       noteTagsProvider.overrideWith((ref, id) => Stream.value(const [])),
@@ -122,6 +124,60 @@ void main() {
               attributes['bold'] == true;
         }),
       ),
+    );
+  });
+
+  testWidgets('dispose flushes edits made during an in-flight autosave', (
+    tester,
+  ) async {
+    final gated = _GatedNotesService(
+      db: db,
+      media: MediaStore(temp),
+      clock: FixedClock(DateTime.utc(2026, 7, 17, 12)),
+      ids: SequentialIdGenerator(),
+      deviceId: 'device-test',
+    );
+    await tester.pumpWidget(detail(note, service: gated));
+    await tester.pumpAndSettle();
+    final editor = tester.widget<QuillEditor>(find.byType(QuillEditor));
+    final controller = editor.controller;
+
+    // Первая правка: автосохранение стартует и виснет на gate.
+    gated.gate = Completer<void>();
+    controller.replaceText(
+      0,
+      0,
+      'Первая. ',
+      const TextSelection.collapsed(offset: 8),
+    );
+    await tester.pump(const Duration(milliseconds: 550));
+    expect(gated.updateCalls, 1);
+
+    // Вторая правка приходит, пока первое сохранение ещё в полёте.
+    controller.replaceText(
+      8,
+      0,
+      'Вторая. ',
+      const TextSelection.collapsed(offset: 16),
+    );
+
+    // Панель закрывается до завершения первого сохранения.
+    await tester.pumpWidget(
+      const MaterialApp(home: Scaffold(body: SizedBox())),
+    );
+    gated.gate!.complete();
+    await tester.pumpAndSettle();
+
+    // Финальный flush сериализован после in-flight: обе правки durable,
+    // вторая запись идёт с актуальной ревизией (без тихого StateError).
+    final saved = await (db.select(
+      db.notes,
+    )..where((row) => row.id.equals(note.id))).getSingle();
+    expect(gated.updateCalls, 2);
+    expect(saved.revision, note.revision + 2);
+    expect(
+      saved.documentPlainText,
+      startsWith('Первая. Вторая. Проверить сценарий'),
     );
   });
 
@@ -200,6 +256,29 @@ void main() {
       findsWidgets,
     );
   });
+}
+
+/// NotesService, у которого updateDocument можно подвесить на Completer —
+/// моделирует медленную запись для проверки гонки dispose ↔ автосохранение.
+class _GatedNotesService extends NotesService {
+  _GatedNotesService({
+    required super.db,
+    required super.media,
+    required super.clock,
+    required super.ids,
+    required super.deviceId,
+  });
+
+  Completer<void>? gate;
+  int updateCalls = 0;
+
+  @override
+  Future<void> updateDocument(Note note, PotokDocument document) async {
+    updateCalls++;
+    final pending = gate;
+    if (pending != null) await pending.future;
+    return super.updateDocument(note, document);
+  }
 }
 
 class _FakeClipboardImageReader implements ClipboardImageReader {

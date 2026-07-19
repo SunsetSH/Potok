@@ -59,6 +59,11 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
   /// Riverpod запрещает ref в dispose — держим ссылку на реестр в поле.
   late final NoteFlushRegistry _flushRegistry;
 
+  /// Riverpod запрещает ref.read в dispose (ConsumerStatefulElement уже
+  /// размонтирован к этому моменту) — держим последний известный сервис
+  /// в поле, обновляемое на каждый build().
+  NotesService? _notesService;
+
   @override
   void initState() {
     super.initState();
@@ -86,18 +91,28 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
     _debounce?.cancel();
     _docChanges?.cancel();
     // Панель закрыта с несохранёнными правками — дописываем без ожидания,
-    // чтобы правка не потерялась (durable-сразу, ТЗ 0.1).
+    // чтобы правка не потерялась (durable-сразу, ТЗ 0.1). Flush сериализуем
+    // с незавершённым автосохранением: параллельная запись со старой
+    // ревизией молча падала бы на optimistic-lock (StateError).
     final note = _latest;
     final controller = _controller;
     if (_dirty && note != null && controller != null) {
-      final service = ref.read(notesServiceProvider).value;
+      final service = _notesService;
       if (service != null) {
+        final document = _snapshot(controller);
+        final encoded = document.encode();
+        final inFlight = _saveCompletion?.future ?? Future<void>.value();
         unawaited(
-          service.updateDocument(note, _snapshot(controller)).catchError((
-            Object e,
-          ) {
-            debugPrint('note flush failed: ${e.runtimeType}');
-          }),
+          inFlight
+              .then((_) {
+                // _latest/_syncedJson обновлены завершившимся _save —
+                // берём актуальную ревизию и не пишем дубликат.
+                if (encoded == _syncedJson) return Future<void>.value();
+                return service.updateDocument(_latest ?? note, document);
+              })
+              .catchError((Object e) {
+                debugPrint('note flush failed: ${e.runtimeType}');
+              }),
         );
       }
     }
@@ -194,9 +209,11 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
   }
 
   Future<void> _save() async {
-    if (_saving) {
+    while (_saving) {
       await _saveCompletion?.future;
-      return;
+      // Пока шло сохранение, могли прийти новые правки — сохраняем и их,
+      // иначе вызывающий (Ctrl+S) увидит «сохранено» при _dirty == true.
+      if (!mounted || !_dirty) return;
     }
     final note = _latest;
     final controller = _controller;
@@ -475,6 +492,7 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
   @override
   Widget build(BuildContext context) {
     final c = PotokColors.of(context);
+    _notesService = ref.watch(notesServiceProvider).value ?? _notesService;
     final note = ref.watch(selectedNoteProvider);
     _sync(note);
 

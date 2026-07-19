@@ -207,16 +207,19 @@ class ImagesService {
     return file.existsSync() ? file : null;
   }
 
+  /// Удаляет только image-ассеты драфта: чужие виды (аудио с дочерними
+  /// записями) этот сервис не трогает.
   Future<void> discardDraftImages(String noteId) async {
+    Expression<bool> draftImages($MediaAssetsTable asset) =>
+        asset.ownerNoteId.equals(noteId) &
+        asset.kind.equalsValue(AssetKind.image);
     final assets = await (db.select(
       db.mediaAssets,
-    )..where((asset) => asset.ownerNoteId.equals(noteId))).get();
+    )..where(draftImages)).get();
     for (final asset in assets) {
       await media.discard(asset.relativePath);
     }
-    await (db.delete(
-      db.mediaAssets,
-    )..where((asset) => asset.ownerNoteId.equals(noteId))).go();
+    await (db.delete(db.mediaAssets)..where(draftImages)).go();
   }
 
   /// Marks old, unreferenced images as tombstones and removes their bytes.

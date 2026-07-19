@@ -820,6 +820,21 @@ class $NotesTable extends Notes with TableInfo<$NotesTable, Note> {
     type: DriftSqlType.int,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _isHiddenMeta = const VerificationMeta(
+    'isHidden',
+  );
+  @override
+  late final GeneratedColumn<bool> isHidden = GeneratedColumn<bool>(
+    'is_hidden',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("is_hidden" IN (0, 1))',
+    ),
+    defaultValue: const Constant(false),
+  );
   static const VerificationMeta _createdAtUtcMeta = const VerificationMeta(
     'createdAtUtc',
   );
@@ -879,6 +894,7 @@ class $NotesTable extends Notes with TableInfo<$NotesTable, Note> {
     favoritedAtUtc,
     completedAtUtc,
     eventAtUtc,
+    isHidden,
     createdAtUtc,
     updatedAtUtc,
     deletedAtUtc,
@@ -972,6 +988,12 @@ class $NotesTable extends Notes with TableInfo<$NotesTable, Note> {
           data['event_at_utc']!,
           _eventAtUtcMeta,
         ),
+      );
+    }
+    if (data.containsKey('is_hidden')) {
+      context.handle(
+        _isHiddenMeta,
+        isHidden.isAcceptableOrUnknown(data['is_hidden']!, _isHiddenMeta),
       );
     }
     if (data.containsKey('created_at_utc')) {
@@ -1072,6 +1094,10 @@ class $NotesTable extends Notes with TableInfo<$NotesTable, Note> {
         DriftSqlType.int,
         data['${effectivePrefix}event_at_utc'],
       ),
+      isHidden: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}is_hidden'],
+      )!,
       createdAtUtc: attachedDatabase.typeMapping.read(
         DriftSqlType.int,
         data['${effectivePrefix}created_at_utc'],
@@ -1115,6 +1141,10 @@ class Note extends DataClass implements Insertable<Note> {
   final int? favoritedAtUtc;
   final int? completedAtUtc;
   final int? eventAtUtc;
+
+  /// Служебная скрытая строка (image-драфт, staged-аудио): не показывается
+  /// ни в списках, ни в корзине. Публикация снимает флаг.
+  final bool isHidden;
   final int createdAtUtc;
   final int updatedAtUtc;
   final int? deletedAtUtc;
@@ -1132,6 +1162,7 @@ class Note extends DataClass implements Insertable<Note> {
     this.favoritedAtUtc,
     this.completedAtUtc,
     this.eventAtUtc,
+    required this.isHidden,
     required this.createdAtUtc,
     required this.updatedAtUtc,
     this.deletedAtUtc,
@@ -1170,6 +1201,7 @@ class Note extends DataClass implements Insertable<Note> {
     if (!nullToAbsent || eventAtUtc != null) {
       map['event_at_utc'] = Variable<int>(eventAtUtc);
     }
+    map['is_hidden'] = Variable<bool>(isHidden);
     map['created_at_utc'] = Variable<int>(createdAtUtc);
     map['updated_at_utc'] = Variable<int>(updatedAtUtc);
     if (!nullToAbsent || deletedAtUtc != null) {
@@ -1203,6 +1235,7 @@ class Note extends DataClass implements Insertable<Note> {
       eventAtUtc: eventAtUtc == null && nullToAbsent
           ? const Value.absent()
           : Value(eventAtUtc),
+      isHidden: Value(isHidden),
       createdAtUtc: Value(createdAtUtc),
       updatedAtUtc: Value(updatedAtUtc),
       deletedAtUtc: deletedAtUtc == null && nullToAbsent
@@ -1232,6 +1265,7 @@ class Note extends DataClass implements Insertable<Note> {
       favoritedAtUtc: serializer.fromJson<int?>(json['favoritedAtUtc']),
       completedAtUtc: serializer.fromJson<int?>(json['completedAtUtc']),
       eventAtUtc: serializer.fromJson<int?>(json['eventAtUtc']),
+      isHidden: serializer.fromJson<bool>(json['isHidden']),
       createdAtUtc: serializer.fromJson<int>(json['createdAtUtc']),
       updatedAtUtc: serializer.fromJson<int>(json['updatedAtUtc']),
       deletedAtUtc: serializer.fromJson<int?>(json['deletedAtUtc']),
@@ -1256,6 +1290,7 @@ class Note extends DataClass implements Insertable<Note> {
       'favoritedAtUtc': serializer.toJson<int?>(favoritedAtUtc),
       'completedAtUtc': serializer.toJson<int?>(completedAtUtc),
       'eventAtUtc': serializer.toJson<int?>(eventAtUtc),
+      'isHidden': serializer.toJson<bool>(isHidden),
       'createdAtUtc': serializer.toJson<int>(createdAtUtc),
       'updatedAtUtc': serializer.toJson<int>(updatedAtUtc),
       'deletedAtUtc': serializer.toJson<int?>(deletedAtUtc),
@@ -1276,6 +1311,7 @@ class Note extends DataClass implements Insertable<Note> {
     Value<int?> favoritedAtUtc = const Value.absent(),
     Value<int?> completedAtUtc = const Value.absent(),
     Value<int?> eventAtUtc = const Value.absent(),
+    bool? isHidden,
     int? createdAtUtc,
     int? updatedAtUtc,
     Value<int?> deletedAtUtc = const Value.absent(),
@@ -1297,6 +1333,7 @@ class Note extends DataClass implements Insertable<Note> {
         ? completedAtUtc.value
         : this.completedAtUtc,
     eventAtUtc: eventAtUtc.present ? eventAtUtc.value : this.eventAtUtc,
+    isHidden: isHidden ?? this.isHidden,
     createdAtUtc: createdAtUtc ?? this.createdAtUtc,
     updatedAtUtc: updatedAtUtc ?? this.updatedAtUtc,
     deletedAtUtc: deletedAtUtc.present ? deletedAtUtc.value : this.deletedAtUtc,
@@ -1330,6 +1367,7 @@ class Note extends DataClass implements Insertable<Note> {
       eventAtUtc: data.eventAtUtc.present
           ? data.eventAtUtc.value
           : this.eventAtUtc,
+      isHidden: data.isHidden.present ? data.isHidden.value : this.isHidden,
       createdAtUtc: data.createdAtUtc.present
           ? data.createdAtUtc.value
           : this.createdAtUtc,
@@ -1358,6 +1396,7 @@ class Note extends DataClass implements Insertable<Note> {
           ..write('favoritedAtUtc: $favoritedAtUtc, ')
           ..write('completedAtUtc: $completedAtUtc, ')
           ..write('eventAtUtc: $eventAtUtc, ')
+          ..write('isHidden: $isHidden, ')
           ..write('createdAtUtc: $createdAtUtc, ')
           ..write('updatedAtUtc: $updatedAtUtc, ')
           ..write('deletedAtUtc: $deletedAtUtc, ')
@@ -1380,6 +1419,7 @@ class Note extends DataClass implements Insertable<Note> {
     favoritedAtUtc,
     completedAtUtc,
     eventAtUtc,
+    isHidden,
     createdAtUtc,
     updatedAtUtc,
     deletedAtUtc,
@@ -1401,6 +1441,7 @@ class Note extends DataClass implements Insertable<Note> {
           other.favoritedAtUtc == this.favoritedAtUtc &&
           other.completedAtUtc == this.completedAtUtc &&
           other.eventAtUtc == this.eventAtUtc &&
+          other.isHidden == this.isHidden &&
           other.createdAtUtc == this.createdAtUtc &&
           other.updatedAtUtc == this.updatedAtUtc &&
           other.deletedAtUtc == this.deletedAtUtc &&
@@ -1420,6 +1461,7 @@ class NotesCompanion extends UpdateCompanion<Note> {
   final Value<int?> favoritedAtUtc;
   final Value<int?> completedAtUtc;
   final Value<int?> eventAtUtc;
+  final Value<bool> isHidden;
   final Value<int> createdAtUtc;
   final Value<int> updatedAtUtc;
   final Value<int?> deletedAtUtc;
@@ -1438,6 +1480,7 @@ class NotesCompanion extends UpdateCompanion<Note> {
     this.favoritedAtUtc = const Value.absent(),
     this.completedAtUtc = const Value.absent(),
     this.eventAtUtc = const Value.absent(),
+    this.isHidden = const Value.absent(),
     this.createdAtUtc = const Value.absent(),
     this.updatedAtUtc = const Value.absent(),
     this.deletedAtUtc = const Value.absent(),
@@ -1457,6 +1500,7 @@ class NotesCompanion extends UpdateCompanion<Note> {
     this.favoritedAtUtc = const Value.absent(),
     this.completedAtUtc = const Value.absent(),
     this.eventAtUtc = const Value.absent(),
+    this.isHidden = const Value.absent(),
     required int createdAtUtc,
     required int updatedAtUtc,
     this.deletedAtUtc = const Value.absent(),
@@ -1481,6 +1525,7 @@ class NotesCompanion extends UpdateCompanion<Note> {
     Expression<int>? favoritedAtUtc,
     Expression<int>? completedAtUtc,
     Expression<int>? eventAtUtc,
+    Expression<bool>? isHidden,
     Expression<int>? createdAtUtc,
     Expression<int>? updatedAtUtc,
     Expression<int>? deletedAtUtc,
@@ -1500,6 +1545,7 @@ class NotesCompanion extends UpdateCompanion<Note> {
       if (favoritedAtUtc != null) 'favorited_at_utc': favoritedAtUtc,
       if (completedAtUtc != null) 'completed_at_utc': completedAtUtc,
       if (eventAtUtc != null) 'event_at_utc': eventAtUtc,
+      if (isHidden != null) 'is_hidden': isHidden,
       if (createdAtUtc != null) 'created_at_utc': createdAtUtc,
       if (updatedAtUtc != null) 'updated_at_utc': updatedAtUtc,
       if (deletedAtUtc != null) 'deleted_at_utc': deletedAtUtc,
@@ -1521,6 +1567,7 @@ class NotesCompanion extends UpdateCompanion<Note> {
     Value<int?>? favoritedAtUtc,
     Value<int?>? completedAtUtc,
     Value<int?>? eventAtUtc,
+    Value<bool>? isHidden,
     Value<int>? createdAtUtc,
     Value<int>? updatedAtUtc,
     Value<int?>? deletedAtUtc,
@@ -1540,6 +1587,7 @@ class NotesCompanion extends UpdateCompanion<Note> {
       favoritedAtUtc: favoritedAtUtc ?? this.favoritedAtUtc,
       completedAtUtc: completedAtUtc ?? this.completedAtUtc,
       eventAtUtc: eventAtUtc ?? this.eventAtUtc,
+      isHidden: isHidden ?? this.isHidden,
       createdAtUtc: createdAtUtc ?? this.createdAtUtc,
       updatedAtUtc: updatedAtUtc ?? this.updatedAtUtc,
       deletedAtUtc: deletedAtUtc ?? this.deletedAtUtc,
@@ -1591,6 +1639,9 @@ class NotesCompanion extends UpdateCompanion<Note> {
     if (eventAtUtc.present) {
       map['event_at_utc'] = Variable<int>(eventAtUtc.value);
     }
+    if (isHidden.present) {
+      map['is_hidden'] = Variable<bool>(isHidden.value);
+    }
     if (createdAtUtc.present) {
       map['created_at_utc'] = Variable<int>(createdAtUtc.value);
     }
@@ -1624,6 +1675,7 @@ class NotesCompanion extends UpdateCompanion<Note> {
           ..write('favoritedAtUtc: $favoritedAtUtc, ')
           ..write('completedAtUtc: $completedAtUtc, ')
           ..write('eventAtUtc: $eventAtUtc, ')
+          ..write('isHidden: $isHidden, ')
           ..write('createdAtUtc: $createdAtUtc, ')
           ..write('updatedAtUtc: $updatedAtUtc, ')
           ..write('deletedAtUtc: $deletedAtUtc, ')
@@ -7242,7 +7294,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   late final $SmartViewsTable smartViews = $SmartViewsTable(this);
   Selectable<SearchNotesResult> searchNotes(String query, int limitRows) {
     return customSelect(
-      'SELECT"n"."id" AS "nested_0.id", "n"."project_id" AS "nested_0.project_id", "n"."title" AS "nested_0.title", "n"."status" AS "nested_0.status", "n"."document_json" AS "nested_0.document_json", "n"."document_plain_text" AS "nested_0.document_plain_text", "n"."source_kind" AS "nested_0.source_kind", "n"."is_pinned" AS "nested_0.is_pinned", "n"."is_favorite" AS "nested_0.is_favorite", "n"."favorited_at_utc" AS "nested_0.favorited_at_utc", "n"."completed_at_utc" AS "nested_0.completed_at_utc", "n"."event_at_utc" AS "nested_0.event_at_utc", "n"."created_at_utc" AS "nested_0.created_at_utc", "n"."updated_at_utc" AS "nested_0.updated_at_utc", "n"."deleted_at_utc" AS "nested_0.deleted_at_utc", "n"."revision" AS "nested_0.revision" FROM notes AS n INNER JOIN notes_fts AS f ON f."rowid" = n."rowid" WHERE notes_fts MATCH ?1 AND n.deleted_at_utc IS NULL ORDER BY bm25(notes_fts), n.id DESC LIMIT ?2',
+      'SELECT"n"."id" AS "nested_0.id", "n"."project_id" AS "nested_0.project_id", "n"."title" AS "nested_0.title", "n"."status" AS "nested_0.status", "n"."document_json" AS "nested_0.document_json", "n"."document_plain_text" AS "nested_0.document_plain_text", "n"."source_kind" AS "nested_0.source_kind", "n"."is_pinned" AS "nested_0.is_pinned", "n"."is_favorite" AS "nested_0.is_favorite", "n"."favorited_at_utc" AS "nested_0.favorited_at_utc", "n"."completed_at_utc" AS "nested_0.completed_at_utc", "n"."event_at_utc" AS "nested_0.event_at_utc", "n"."is_hidden" AS "nested_0.is_hidden", "n"."created_at_utc" AS "nested_0.created_at_utc", "n"."updated_at_utc" AS "nested_0.updated_at_utc", "n"."deleted_at_utc" AS "nested_0.deleted_at_utc", "n"."revision" AS "nested_0.revision" FROM notes AS n INNER JOIN notes_fts AS f ON f."rowid" = n."rowid" WHERE notes_fts MATCH ?1 AND n.deleted_at_utc IS NULL ORDER BY bm25(notes_fts), n.id DESC LIMIT ?2',
       variables: [Variable<String>(query), Variable<int>(limitRows)],
       readsFrom: {notes, notesFts},
     ).asyncMap(
@@ -7257,7 +7309,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     int limitRows,
   ) {
     return customSelect(
-      'SELECT DISTINCT"n"."id" AS "nested_0.id", "n"."project_id" AS "nested_0.project_id", "n"."title" AS "nested_0.title", "n"."status" AS "nested_0.status", "n"."document_json" AS "nested_0.document_json", "n"."document_plain_text" AS "nested_0.document_plain_text", "n"."source_kind" AS "nested_0.source_kind", "n"."is_pinned" AS "nested_0.is_pinned", "n"."is_favorite" AS "nested_0.is_favorite", "n"."favorited_at_utc" AS "nested_0.favorited_at_utc", "n"."completed_at_utc" AS "nested_0.completed_at_utc", "n"."event_at_utc" AS "nested_0.event_at_utc", "n"."created_at_utc" AS "nested_0.created_at_utc", "n"."updated_at_utc" AS "nested_0.updated_at_utc", "n"."deleted_at_utc" AS "nested_0.deleted_at_utc", "n"."revision" AS "nested_0.revision" FROM notes AS n LEFT JOIN projects AS p ON p.id = n.project_id AND p.deleted_at_utc IS NULL LEFT JOIN note_tags AS nt ON nt.note_id = n.id LEFT JOIN tags AS t ON t.id = nt.tag_id AND t.deleted_at_utc IS NULL WHERE n.deleted_at_utc IS NULL AND(p.name LIKE ?1 ESCAPE \'\\\' COLLATE NOCASE OR t.name LIKE ?1 ESCAPE \'\\\' COLLATE NOCASE)ORDER BY n.updated_at_utc DESC, n.id DESC LIMIT ?2',
+      'SELECT DISTINCT"n"."id" AS "nested_0.id", "n"."project_id" AS "nested_0.project_id", "n"."title" AS "nested_0.title", "n"."status" AS "nested_0.status", "n"."document_json" AS "nested_0.document_json", "n"."document_plain_text" AS "nested_0.document_plain_text", "n"."source_kind" AS "nested_0.source_kind", "n"."is_pinned" AS "nested_0.is_pinned", "n"."is_favorite" AS "nested_0.is_favorite", "n"."favorited_at_utc" AS "nested_0.favorited_at_utc", "n"."completed_at_utc" AS "nested_0.completed_at_utc", "n"."event_at_utc" AS "nested_0.event_at_utc", "n"."is_hidden" AS "nested_0.is_hidden", "n"."created_at_utc" AS "nested_0.created_at_utc", "n"."updated_at_utc" AS "nested_0.updated_at_utc", "n"."deleted_at_utc" AS "nested_0.deleted_at_utc", "n"."revision" AS "nested_0.revision" FROM notes AS n LEFT JOIN projects AS p ON p.id = n.project_id AND p.deleted_at_utc IS NULL LEFT JOIN note_tags AS nt ON nt.note_id = n.id LEFT JOIN tags AS t ON t.id = nt.tag_id AND t.deleted_at_utc IS NULL WHERE n.deleted_at_utc IS NULL AND(p.name LIKE ?1 ESCAPE \'\\\' COLLATE NOCASE OR t.name LIKE ?1 ESCAPE \'\\\' COLLATE NOCASE)ORDER BY n.updated_at_utc DESC, n.id DESC LIMIT ?2',
       variables: [Variable<String>(pattern), Variable<int>(limitRows)],
       readsFrom: {notes, projects, noteTags, tags},
     ).asyncMap(
@@ -7844,6 +7896,7 @@ typedef $$NotesTableCreateCompanionBuilder =
       Value<int?> favoritedAtUtc,
       Value<int?> completedAtUtc,
       Value<int?> eventAtUtc,
+      Value<bool> isHidden,
       required int createdAtUtc,
       required int updatedAtUtc,
       Value<int?> deletedAtUtc,
@@ -7864,6 +7917,7 @@ typedef $$NotesTableUpdateCompanionBuilder =
       Value<int?> favoritedAtUtc,
       Value<int?> completedAtUtc,
       Value<int?> eventAtUtc,
+      Value<bool> isHidden,
       Value<int> createdAtUtc,
       Value<int> updatedAtUtc,
       Value<int?> deletedAtUtc,
@@ -8034,6 +8088,11 @@ class $$NotesTableFilterComposer extends Composer<_$AppDatabase, $NotesTable> {
 
   ColumnFilters<int> get eventAtUtc => $composableBuilder(
     column: $table.eventAtUtc,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get isHidden => $composableBuilder(
+    column: $table.isHidden,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -8245,6 +8304,11 @@ class $$NotesTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<bool> get isHidden => $composableBuilder(
+    column: $table.isHidden,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<int> get createdAtUtc => $composableBuilder(
     column: $table.createdAtUtc,
     builder: (column) => ColumnOrderings(column),
@@ -8345,6 +8409,9 @@ class $$NotesTableAnnotationComposer
     column: $table.eventAtUtc,
     builder: (column) => column,
   );
+
+  GeneratedColumn<bool> get isHidden =>
+      $composableBuilder(column: $table.isHidden, builder: (column) => column);
 
   GeneratedColumn<int> get createdAtUtc => $composableBuilder(
     column: $table.createdAtUtc,
@@ -8535,6 +8602,7 @@ class $$NotesTableTableManager
                 Value<int?> favoritedAtUtc = const Value.absent(),
                 Value<int?> completedAtUtc = const Value.absent(),
                 Value<int?> eventAtUtc = const Value.absent(),
+                Value<bool> isHidden = const Value.absent(),
                 Value<int> createdAtUtc = const Value.absent(),
                 Value<int> updatedAtUtc = const Value.absent(),
                 Value<int?> deletedAtUtc = const Value.absent(),
@@ -8553,6 +8621,7 @@ class $$NotesTableTableManager
                 favoritedAtUtc: favoritedAtUtc,
                 completedAtUtc: completedAtUtc,
                 eventAtUtc: eventAtUtc,
+                isHidden: isHidden,
                 createdAtUtc: createdAtUtc,
                 updatedAtUtc: updatedAtUtc,
                 deletedAtUtc: deletedAtUtc,
@@ -8573,6 +8642,7 @@ class $$NotesTableTableManager
                 Value<int?> favoritedAtUtc = const Value.absent(),
                 Value<int?> completedAtUtc = const Value.absent(),
                 Value<int?> eventAtUtc = const Value.absent(),
+                Value<bool> isHidden = const Value.absent(),
                 required int createdAtUtc,
                 required int updatedAtUtc,
                 Value<int?> deletedAtUtc = const Value.absent(),
@@ -8591,6 +8661,7 @@ class $$NotesTableTableManager
                 favoritedAtUtc: favoritedAtUtc,
                 completedAtUtc: completedAtUtc,
                 eventAtUtc: eventAtUtc,
+                isHidden: isHidden,
                 createdAtUtc: createdAtUtc,
                 updatedAtUtc: updatedAtUtc,
                 deletedAtUtc: deletedAtUtc,

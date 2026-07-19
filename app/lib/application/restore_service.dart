@@ -121,8 +121,14 @@ class RestoreService {
 
       // Лимиты до распаковки: суммарный размер и compression ratio.
       var totalUncompressed = 0;
+      final seenNames = <String>{};
       for (final entry in entries) {
         _validateEntryName(entry.name);
+        // Case-insensitive коллизии: на Windows/macOS два таких имени
+        // распаковались бы в один файл.
+        if (!seenNames.add(entry.name.toLowerCase())) {
+          throw const RestoreException('недопустимый путь внутри архива');
+        }
         totalUncompressed += entry.size;
       }
       if (totalUncompressed > maxTotalUncompressedBytes) {
@@ -291,8 +297,25 @@ class RestoreService {
           !RegExp(safeSegment).hasMatch(segment)) {
         throw const RestoreException('недопустимый путь внутри архива');
       }
+      // Windows: завершающие точки/пробелы и зарезервированные имена
+      // (CON, NUL, COM1…) недопустимы, в т.ч. с любым расширением.
+      if (segment.endsWith('.') || segment.endsWith(' ')) {
+        throw const RestoreException('недопустимый путь внутри архива');
+      }
+      final baseName = segment.split('.').first.toUpperCase();
+      if (_windowsReservedNames.contains(baseName)) {
+        throw const RestoreException('недопустимый путь внутри архива');
+      }
     }
   }
+
+  static const _windowsReservedNames = <String>{
+    'CON', 'PRN', 'AUX', 'NUL',
+    'COM1', 'COM2', 'COM3', 'COM4', 'COM5',
+    'COM6', 'COM7', 'COM8', 'COM9',
+    'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5',
+    'LPT6', 'LPT7', 'LPT8', 'LPT9',
+  };
 
   String _localPathFor(Directory quarantine, String entryName) {
     final root = p.normalize(p.absolute(quarantine.path));

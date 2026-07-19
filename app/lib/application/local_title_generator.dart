@@ -20,7 +20,13 @@ class LocalTitleGenerator {
     if (normalized.isEmpty) return null;
     if (normalized.length <= maxLength) return normalized;
 
-    var cut = normalized.substring(0, maxLength + 1);
+    var end = maxLength + 1;
+    // Не разрезаем суррогатную пару (например, эмодзи) на границе.
+    if (end < normalized.length &&
+        (normalized.codeUnitAt(end) & 0xFC00) == 0xDC00) {
+      end--;
+    }
+    var cut = normalized.substring(0, end);
     final lastSpace = cut.lastIndexOf(' ');
     if (lastSpace >= maxLength ~/ 2) cut = cut.substring(0, lastSpace);
     return '${cut.trim()}…';

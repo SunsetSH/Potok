@@ -52,6 +52,9 @@ class ExportService {
       if (!page.hasMore || page.nextCursor == null) break;
       cursor = page.nextCursor;
     }
+    // Последняя страница может перешагнуть лимит — усекаем, иначе
+    // _loadContext честно откажет всему экспорту.
+    if (result.length > maxNotes) result.length = maxNotes;
     return result;
   }
 
@@ -276,7 +279,9 @@ class _ExportContext {
     required this.audioByNote,
   });
 
-  Map<String, List<String>> get tagsByNote => {
+  /// Материализуется один раз: getter в цикле экспорта пересобирал бы Map
+  /// на каждую заметку (O(n²)).
+  late final Map<String, List<String>> tagsByNote = {
     for (final entry in tagRowsByNote.entries)
       entry.key: [for (final tag in entry.value) tag.name],
   };

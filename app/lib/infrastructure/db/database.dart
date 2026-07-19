@@ -42,6 +42,10 @@ class Notes extends Table {
   IntColumn get favoritedAtUtc => integer().nullable()();
   IntColumn get completedAtUtc => integer().nullable()();
   IntColumn get eventAtUtc => integer().nullable()();
+
+  /// Служебная скрытая строка (image-драфт, staged-аудио): не показывается
+  /// ни в списках, ни в корзине. Публикация снимает флаг.
+  BoolColumn get isHidden => boolean().withDefault(const Constant(false))();
   IntColumn get createdAtUtc => integer()();
   IntColumn get updatedAtUtc => integer()();
   IntColumn get deletedAtUtc => integer().nullable()();
@@ -205,8 +209,12 @@ class NoteStatusConverter extends TypeConverter<NoteStatus, String> {
   const NoteStatusConverter();
 
   @override
-  NoteStatus fromSql(String fromDb) =>
-      NoteStatus.values.firstWhere((s) => s.db == fromDb);
+  NoteStatus fromSql(String fromDb) => NoteStatus.values.firstWhere(
+    (s) => s.db == fromDb,
+    // Неизвестное значение (например, из будущей версии) не должно ронять
+    // чтение всей строки — деградация до статуса по умолчанию.
+    orElse: () => NoteStatus.inWork,
+  );
 
   @override
   String toSql(NoteStatus value) => value.db;
@@ -245,7 +253,7 @@ class AppDatabase extends _$AppDatabase {
   );
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -306,6 +314,19 @@ END
         // ADR-010: remove the product Session entity while preserving every
         // note and media row. FTS is external-content and must be detached
         // while Drift recreates Notes without session_id.
+        //
+        // v4's is_hidden column must exist on the physical table *before*
+        // TableMigration copies rows into the schema-matching shape below,
+        // otherwise the generated INSERT selects a column the v2 table
+        // never had.
+        final hasIsHidden = await customSelect(
+          "SELECT 1 FROM pragma_table_info('notes') WHERE name = 'is_hidden'",
+        ).get();
+        if (hasIsHidden.isEmpty) {
+          await customStatement(
+            'ALTER TABLE notes ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0',
+          );
+        }
         await customStatement('DROP TRIGGER IF EXISTS notes_fts_insert');
         await customStatement('DROP TRIGGER IF EXISTS notes_fts_delete');
         await customStatement('DROP TRIGGER IF EXISTS notes_fts_update');
@@ -352,6 +373,45 @@ END
         await customStatement(
           "INSERT INTO notes_fts(notes_fts) VALUES('rebuild')",
         );
+      }
+      if (from < 4) {
+        // v4: явный флаг служебной скрытой строки вместо магического title.
+        // Реентерабельно: колонка могла появиться при пересоздании notes
+        // (alterTable в ветке from == 2) или при повторном прогоне миграции.
+        final hasColumn = await customSelect(
+          "SELECT 1 FROM pragma_table_info('notes') WHERE name = 'is_hidden'",
+        ).get();
+        if (hasColumn.isEmpty) {
+          await m.addColumn(notes, notes.isHidden);
+        }
+        // Backfill существующих скрытых строк по прежним признакам:
+        // image-драфты (магический title) и staged-аудио (скрытая заметка
+        // со staging-ассетом). media_assets могла ещё не существовать на
+        // очень старых версиях схемы (test fixtures до v1) — тогда
+        // проверяем только признак title.
+        final hasMediaAssets = await customSelect(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'media_assets'",
+        ).get();
+        if (hasMediaAssets.isNotEmpty) {
+          await customStatement('''
+UPDATE notes SET is_hidden = 1
+WHERE deleted_at_utc IS NOT NULL
+  AND (
+    title = '__potok_image_draft__'
+    OR EXISTS (
+      SELECT 1 FROM media_assets a
+      WHERE a.owner_note_id = notes.id
+        AND a.kind = 'audio'
+        AND a.lifecycle_state = 'staging'
+    )
+  )
+''');
+        } else {
+          await customStatement('''
+UPDATE notes SET is_hidden = 1
+WHERE deleted_at_utc IS NOT NULL AND title = '__potok_image_draft__'
+''');
+        }
       }
     },
     beforeOpen: (details) async {

@@ -167,8 +167,18 @@ final androidLaunchIntegrationProvider =
               // Capture still opens safely with "No project".
             }
           }
+          // Навигатор может ещё не построиться (холодный старт). Ждём с
+          // лимитом, чтобы не залипнуть в _draining навсегда.
+          const step = Duration(milliseconds: 16);
+          const navigatorTimeout = Duration(seconds: 10);
+          var waited = Duration.zero;
           while (appNavigatorKey.currentContext == null) {
-            await Future<void>.delayed(const Duration(milliseconds: 16));
+            if (waited >= navigatorTimeout) {
+              debugPrint('android launch intent dropped: navigator not ready');
+              return;
+            }
+            await Future<void>.delayed(step);
+            waited += step;
           }
           final context = appNavigatorKey.currentContext;
           if (context == null || !context.mounted) return;

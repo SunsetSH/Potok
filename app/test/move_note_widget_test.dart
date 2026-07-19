@@ -31,6 +31,7 @@ void main() {
     sourceKind: SourceKind.keyboard,
     isPinned: false,
     isFavorite: false,
+    isHidden: false,
     createdAtUtc: 1,
     updatedAtUtc: 1,
     revision: 1,

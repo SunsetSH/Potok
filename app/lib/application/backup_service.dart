@@ -3,11 +3,10 @@ import 'dart:io';
 
 import 'package:archive/archive_io.dart';
 import 'package:crypto/crypto.dart';
-import 'package:drift/drift.dart';
 import 'package:path/path.dart' as p;
+import 'package:sqlite3/sqlite3.dart' as sqlite;
 
 import '../domain/clock.dart';
-import '../domain/types.dart';
 import '../infrastructure/db/database.dart';
 import '../infrastructure/media_store.dart';
 
@@ -78,19 +77,16 @@ class BackupService {
     }
 
     try {
-      // Ready-ассеты (включая корзину: полная копия восстанавливает и её).
-      final assets =
-          await (db.select(db.mediaAssets)..where(
-                (a) => a.lifecycleState.equalsValue(AssetLifecycle.ready),
-              ))
-              .get();
-      final counts = await _counts();
-
       checkCancelled();
       // Консистентный снапшот без WAL: VACUUM INTO новый файл.
       final snapshotFile = File(snapshotPath);
       if (snapshotFile.existsSync()) await snapshotFile.delete();
       await db.customStatement('VACUUM INTO ?', [snapshotPath]);
+
+      // Ready-ассеты и counts читаются из самого снапшота: состав архива
+      // всегда согласован с БД внутри него (включая корзину).
+      final snapshot = _readSnapshot(snapshotPath);
+      final assets = snapshot.assetPaths;
 
       final total = assets.length + 2; // db + media + manifest
       var done = 0;
@@ -108,17 +104,16 @@ class BackupService {
         await encoder.addFile(snapshotFile, BackupFormat.databaseName);
         step();
 
-        for (final asset in assets) {
+        for (final relativePath in assets) {
           checkCancelled();
-          final file = File(media.absolutePath(asset.relativePath));
+          final file = File(media.absolutePath(relativePath));
           if (!file.existsSync()) {
             // Файл пропал вне протокола — честно пропускаем, репорт в итоге.
             missing++;
             step();
             continue;
           }
-          final zipName =
-              BackupFormat.mediaPrefix + _toPosix(asset.relativePath);
+          final zipName = BackupFormat.mediaPrefix + _toPosix(relativePath);
           hashes[zipName] = await _sha256Of(file);
           await encoder.addFile(file, zipName);
           includedAssets++;
@@ -132,9 +127,9 @@ class BackupService {
           'created_at_utc': now,
           'schema_version': db.schemaVersion,
           'counts': {
-            'notes': counts.notes,
-            'projects': counts.projects,
-            'tags': counts.tags,
+            'notes': snapshot.notes,
+            'projects': snapshot.projects,
+            'tags': snapshot.tags,
             'assets': includedAssets,
           },
           'files': hashes,
@@ -149,13 +144,40 @@ class BackupService {
         if (encoderOpen) await encoder.close();
       }
 
+      // Атомарная замена: старый бэкап уезжает в .bak и удаляется только
+      // после успешного rename нового; сбой rename откатывает .bak обратно.
       final target = File(targetPath);
-      if (target.existsSync()) await target.delete();
-      await File(zipTempPath).rename(targetPath);
+      final previousPath = '$targetPath.bak';
+      final previous = File(previousPath);
+      if (previous.existsSync()) await previous.delete();
+      var movedPrevious = false;
+      if (target.existsSync()) {
+        await target.rename(previousPath);
+        movedPrevious = true;
+      }
+      try {
+        await File(zipTempPath).rename(targetPath);
+      } catch (_) {
+        if (movedPrevious) {
+          try {
+            await File(previousPath).rename(targetPath);
+          } on FileSystemException {
+            // Старый бэкап остаётся в .bak — данные не уничтожены.
+          }
+        }
+        rethrow;
+      }
+      if (movedPrevious) {
+        try {
+          await File(previousPath).delete();
+        } on FileSystemException {
+          // Оставшийся .bak безвреден и перезапишется следующим бэкапом.
+        }
+      }
       return BackupResult(
         path: targetPath,
         sizeBytes: target.lengthSync(),
-        noteCount: counts.notes,
+        noteCount: snapshot.notes,
         assetCount: includedAssets,
         missingAssetCount: missing,
       );
@@ -173,19 +195,40 @@ class BackupService {
     }
   }
 
-  Future<({int notes, int projects, int tags})> _counts() async {
-    Future<int> count(TableInfo<Table, Object?> table) async {
-      final result = await (db.selectOnly(
-        table,
-      )..addColumns([countAll()])).getSingle();
-      return result.read(countAll()) ?? 0;
-    }
-
-    return (
-      notes: await count(db.notes),
-      projects: await count(db.projects),
-      tags: await count(db.tags),
+  /// Read-only чтение снапшота: список ready-ассетов и counts согласованы
+  /// с БД, которая попадёт в архив.
+  static ({List<String> assetPaths, int notes, int projects, int tags})
+  _readSnapshot(String snapshotPath) {
+    final database = sqlite.sqlite3.open(
+      snapshotPath,
+      mode: sqlite.OpenMode.readOnly,
     );
+    try {
+      int count(String table) {
+        final value = database
+            .select('SELECT COUNT(*) AS c FROM $table')
+            .first
+            .values
+            .first;
+        return value is int ? value : 0;
+      }
+
+      final assetPaths = [
+        for (final row in database.select(
+          "SELECT relative_path FROM media_assets "
+          "WHERE lifecycle_state = 'ready' ORDER BY relative_path",
+        ))
+          row.values.first as String,
+      ];
+      return (
+        assetPaths: assetPaths,
+        notes: count('notes'),
+        projects: count('projects'),
+        tags: count('tags'),
+      );
+    } finally {
+      database.close();
+    }
   }
 
   static String _toPosix(String relativePath) =>

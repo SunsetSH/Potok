@@ -109,23 +109,40 @@ class TagsService {
     if (trimmed.isEmpty || trimmed.length > 60) {
       throw ArgumentError('tag name must be 1..60 chars');
     }
+    final normalized = normalizeName(trimmed);
     final id = ids.newId();
     final now = clock.nowUtcMillis();
-    await db
-        .into(db.tags)
-        .insert(
-          TagsCompanion.insert(
-            id: id,
-            scope: projectId == null ? TagScope.global : TagScope.project,
-            projectId: Value(projectId),
-            name: trimmed,
-            normalizedName: normalizeName(trimmed),
-            colorArgb: colorArgb,
-            icon: Value(icon),
-            createdAtUtc: now,
-            updatedAtUtc: now,
-          ),
+    await db.transaction(() async {
+      // Дружелюбная ошибка вместо SqliteException от unique-индекса.
+      final duplicateQuery = db.select(db.tags)
+        ..where(
+          (row) =>
+              row.normalizedName.equals(normalized) & row.deletedAtUtc.isNull(),
         );
+      if (projectId == null) {
+        duplicateQuery.where((row) => row.projectId.isNull());
+      } else {
+        duplicateQuery.where((row) => row.projectId.equals(projectId));
+      }
+      if (await duplicateQuery.getSingleOrNull() != null) {
+        throw StateError('tag name already exists in this scope');
+      }
+      await db
+          .into(db.tags)
+          .insert(
+            TagsCompanion.insert(
+              id: id,
+              scope: projectId == null ? TagScope.global : TagScope.project,
+              projectId: Value(projectId),
+              name: trimmed,
+              normalizedName: normalized,
+              colorArgb: colorArgb,
+              icon: Value(icon),
+              createdAtUtc: now,
+              updatedAtUtc: now,
+            ),
+          );
+    });
     return id;
   }
 
@@ -203,9 +220,15 @@ class TagsService {
       final note = await (db.select(
         db.notes,
       )..where((n) => n.id.equals(noteId))).getSingle();
+      if (note.deletedAtUtc != null) {
+        throw StateError('cannot tag a trashed note');
+      }
       final tag = await (db.select(
         db.tags,
       )..where((t) => t.id.equals(tagId))).getSingle();
+      if (tag.deletedAtUtc != null) {
+        throw StateError('tag unavailable');
+      }
       if (tag.scope == TagScope.project && tag.projectId != note.projectId) {
         throw StateError('project tag belongs to a different project');
       }
@@ -215,6 +238,7 @@ class TagsService {
               ))
               .getSingleOrNull();
       if (existing != null) return; // идемпотентно
+      await _bumpNoteRevision(note, now);
       await db
           .into(db.noteTags)
           .insert(
@@ -225,6 +249,7 @@ class TagsService {
             ),
           );
       await _tagsChangedEvent(note, now, '{"assigned":"$tagId"}');
+      await _journalNote(note, 'note.tag_assign', now);
     });
   }
 
@@ -238,9 +263,43 @@ class TagsService {
         db.noteTags,
       )..where((nt) => nt.noteId.equals(noteId) & nt.tagId.equals(tagId))).go();
       if (deleted > 0) {
+        await _bumpNoteRevision(note, now);
         await _tagsChangedEvent(note, now, '{"unassigned":"$tagId"}');
+        await _journalNote(note, 'note.tag_unassign', now);
       }
     });
+  }
+
+  Future<void> _bumpNoteRevision(Note note, int at) async {
+    final changed =
+        await (db.update(db.notes)..where(
+              (row) =>
+                  row.id.equals(note.id) & row.revision.equals(note.revision),
+            ))
+            .write(
+              NotesCompanion(
+                updatedAtUtc: Value(at),
+                revision: Value(note.revision + 1),
+              ),
+            );
+    if (changed == 0) throw StateError('note changed concurrently');
+  }
+
+  Future<void> _journalNote(Note note, String operationKind, int at) {
+    return db
+        .into(db.operationJournal)
+        .insert(
+          OperationJournalCompanion.insert(
+            operationId: ids.newId(),
+            deviceId: deviceId,
+            entityKind: 'note',
+            entityId: note.id,
+            baseRevision: Value(note.revision),
+            newRevision: Value(note.revision + 1),
+            operationKind: operationKind,
+            occurredAtUtc: at,
+          ),
+        );
   }
 
   Future<void> bulkAssignTag(Iterable<Note> selection, String tagId) async {
