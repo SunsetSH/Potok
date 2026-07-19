@@ -161,10 +161,21 @@ class _NoteDetailPaneState extends ConsumerState<NoteDetailPane> {
   void _reloadDocument(String documentJson) {
     final controller = _controller;
     if (controller == null) return;
+    // Внешнее изменение (например, принятая расшифровка) не должно
+    // подкидывать курсор к вставленному тексту и открывать клавиатуру —
+    // редактор мог быть даже не в фокусе.
+    final hadFocus = _editorFocus.hasFocus;
     _docChanges?.cancel();
     controller.document = _quillDocumentFrom(documentJson);
+    controller.updateSelection(
+      const TextSelection.collapsed(offset: 0),
+      ChangeSource.local,
+    );
     _syncedJson = documentJson;
     _docChanges = controller.changes.listen(_onDocChange);
+    if (!hadFocus && _editorFocus.hasFocus) {
+      _editorFocus.unfocus();
+    }
   }
 
   void _sync(Note? note) {
@@ -1030,7 +1041,6 @@ class _ProjectRow extends ConsumerWidget {
 }
 
 class _TagsRow extends ConsumerWidget {
-  static const _createTagValue = '__create_tag__';
   final Note note;
 
   const _TagsRow({required this.note});
@@ -1054,30 +1064,11 @@ class _TagsRow extends ConsumerWidget {
     }
   }
 
-  Future<void> _createAndAssign(BuildContext context, WidgetRef ref) async {
-    final tagId = await showTagEditorDialog(
-      context,
-      ref,
-      initialProjectId: note.projectId,
-    );
-    if (tagId == null || !context.mounted) return;
-    await _runTagAction(context, ref, () async {
-      final service = await ref.read(tagsServiceProvider.future);
-      await service.assignTag(note.id, tagId);
-    }, 'Тег создан, но его не удалось добавить к заметке');
-  }
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final c = PotokColors.of(context);
     final noteTags =
         ref.watch(noteTagsProvider(note.id)).value ?? const <Tag>[];
-    final available =
-        ref.watch(availableTagsProvider(note.projectId)).value ?? const <Tag>[];
-    final assignedIds = noteTags.map((t) => t.id).toSet();
-    final addable = available
-        .where((t) => !assignedIds.contains(t.id))
-        .toList(growable: false);
 
     return Wrap(
       spacing: 7,
@@ -1116,44 +1107,12 @@ class _TagsRow extends ConsumerWidget {
               ),
             ),
           ),
-        PopupMenuButton<String>(
-          tooltip: 'Добавить тег',
-          onSelected: (tagId) {
-            if (tagId == _createTagValue) {
-              unawaited(_createAndAssign(context, ref));
-              return;
-            }
-            unawaited(
-              _runTagAction(context, ref, () async {
-                final service = await ref.read(tagsServiceProvider.future);
-                await service.assignTag(note.id, tagId);
-              }, 'Не удалось добавить тег'),
-            );
-          },
-          itemBuilder: (context) => [
-            for (final tag in addable)
-              PopupMenuItem(
-                value: tag.id,
-                child: Row(
-                  children: [
-                    Icon(Icons.circle, size: 10, color: Color(tag.colorArgb)),
-                    const SizedBox(width: 8),
-                    Flexible(child: Text(tag.name)),
-                  ],
-                ),
-              ),
-            if (addable.isNotEmpty) const PopupMenuDivider(),
-            const PopupMenuItem(
-              value: _createTagValue,
-              child: Row(
-                children: [
-                  Icon(Icons.add_rounded, size: 18),
-                  SizedBox(width: 8),
-                  Text('Создать тег…'),
-                ],
-              ),
-            ),
-          ],
+        InkWell(
+          borderRadius: BorderRadius.circular(999),
+          onTap: () => showDialog<void>(
+            context: context,
+            builder: (dialogContext) => _TagPickerDialog(note: note),
+          ),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             decoration: BoxDecoration(
@@ -1165,6 +1124,111 @@ class _TagsRow extends ConsumerWidget {
               style: TextStyle(fontSize: 11, color: c.muted),
             ),
           ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Диалог множественного выбора тегов: чекбоксы переключают назначение
+/// сразу, диалог не закрывается после выбора одного тега — можно отметить
+/// сколько угодно тегов подряд из одного места (ТЗ: раньше приходилось
+/// заново открывать кнопку на каждый тег).
+class _TagPickerDialog extends ConsumerWidget {
+  final Note note;
+
+  const _TagPickerDialog({required this.note});
+
+  Future<void> _toggle(
+    BuildContext context,
+    WidgetRef ref,
+    String tagId,
+    bool assign,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final service = await ref.read(tagsServiceProvider.future);
+      if (assign) {
+        await service.assignTag(note.id, tagId);
+      } else {
+        await service.unassignTag(note.id, tagId);
+      }
+    } catch (e) {
+      debugPrint('tag toggle failed: ${e.runtimeType}');
+      messenger.showSnackBar(
+        PotokSnackBar(content: const Text('Не удалось изменить тег')),
+      );
+    }
+  }
+
+  Future<void> _createAndAssign(BuildContext context, WidgetRef ref) async {
+    final tagId = await showTagEditorDialog(
+      context,
+      ref,
+      initialProjectId: note.projectId,
+    );
+    if (tagId == null || !context.mounted) return;
+    await _toggle(context, ref, tagId, true);
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final c = PotokColors.of(context);
+    final noteTags =
+        ref.watch(noteTagsProvider(note.id)).value ?? const <Tag>[];
+    final available =
+        ref.watch(availableTagsProvider(note.projectId)).value ?? const <Tag>[];
+    final assignedIds = noteTags.map((t) => t.id).toSet();
+    return AlertDialog(
+      title: const Text('Теги заметки'),
+      content: SizedBox(
+        width: 340,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  for (final tag in available)
+                    CheckboxListTile(
+                      key: ValueKey('tag-picker-${tag.id}'),
+                      dense: true,
+                      value: assignedIds.contains(tag.id),
+                      onChanged: (value) =>
+                          _toggle(context, ref, tag.id, value ?? false),
+                      secondary: Icon(
+                        Icons.circle,
+                        size: 12,
+                        color: Color(tag.colorArgb),
+                      ),
+                      title: Text(tag.name),
+                    ),
+                  if (available.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      child: Text(
+                        'Тегов пока нет',
+                        style: TextStyle(fontSize: 12, color: c.muted),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            const Divider(),
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.add_rounded, size: 18),
+              title: const Text('Создать тег…'),
+              onTap: () => _createAndAssign(context, ref),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Готово'),
         ),
       ],
     );
@@ -1198,6 +1262,46 @@ class _AudioSection extends ConsumerWidget {
         PotokSnackBar(
           content: Text('Не удалось поставить расшифровку в очередь'),
         ),
+      );
+    }
+  }
+
+  Future<void> _deleteRevision(
+    BuildContext context,
+    WidgetRef ref,
+    String revisionId,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Удалить расшифровку?'),
+        content: const Text(
+          'Эта ревизия расшифровки будет удалена. Текст заметки не изменится.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: PotokColors.of(dialogContext).danger,
+            ),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final service = await ref.read(notesServiceProvider.future);
+      await service.deleteRevision(revisionId);
+    } catch (e) {
+      debugPrint('delete transcript revision failed: ${e.runtimeType}');
+      messenger.showSnackBar(
+        PotokSnackBar(content: const Text('Не удалось удалить расшифровку')),
       );
     }
   }
@@ -1374,6 +1478,7 @@ class _AudioSection extends ConsumerWidget {
               revision: revision,
               onAccept: (id) => _accept(context, ref, id),
               onRetry: (id) => _retry(context, ref, id),
+              onDelete: (id) => _deleteRevision(context, ref, id),
               onConfigure: () => showAppearanceDialog(context, ref),
             ),
         ],
@@ -1550,14 +1655,23 @@ class _RevisionTile extends StatelessWidget {
   final TranscriptRevision revision;
   final Future<void> Function(String revisionId) onAccept;
   final Future<void> Function(String revisionId) onRetry;
+  final Future<void> Function(String revisionId) onDelete;
   final VoidCallback onConfigure;
 
   const _RevisionTile({
     required this.revision,
     required this.onAccept,
     required this.onRetry,
+    required this.onDelete,
     required this.onConfigure,
   });
+
+  Widget _deleteButton(PotokColors c) => IconButton(
+    key: ValueKey('delete-revision-${revision.id}'),
+    tooltip: 'Удалить расшифровку',
+    onPressed: () => onDelete(revision.id),
+    icon: Icon(Icons.delete_outline_rounded, size: 18, color: c.danger),
+  );
 
   Widget _statusRow(
     PotokColors c,
@@ -1576,6 +1690,7 @@ class _RevisionTile extends StatelessWidget {
             ),
           ),
           ?action,
+          _deleteButton(c),
         ],
       ),
     );
@@ -1612,6 +1727,7 @@ class _RevisionTile extends StatelessWidget {
                   onPressed: () => onAccept(revision.id),
                   child: const Text('Принять'),
                 ),
+              _deleteButton(c),
             ],
           ),
         );

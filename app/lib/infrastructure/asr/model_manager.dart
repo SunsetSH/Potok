@@ -5,6 +5,7 @@ import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 
 import '../../application/settings_service.dart';
+import 'model_file_downloader.dart';
 
 /// Источник пути к активной модели для очереди расшифровки; отделяет
 /// application-слой от деталей установки паков (тесты подменяют его).
@@ -154,12 +155,21 @@ class AsrModelManager implements ActiveModelLocator {
   /// GitHub; тесты подставляют локальный хост тестового HTTP-сервера.
   final Set<String> allowedDownloadHosts;
 
+  /// Скачивание байт самого файла (ADR-013): по умолчанию простой
+  /// `HttpClient` без платформенных каналов — работает в `flutter test` без
+  /// регистрации плагина. Продакшен явно подставляет
+  /// [BackgroundModelFileDownloader] (провайдер в providers.dart), который
+  /// переживает сворачивание/блокировку экрана на Android.
+  final ModelFileDownloader fileDownloader;
+
   AsrModelManager({
     required this.modelsRoot,
     required this.settings,
     this.devFallbackDir,
     Set<String>? allowedDownloadHosts,
-  }) : allowedDownloadHosts = allowedDownloadHosts ?? _defaultAllowedHosts;
+    ModelFileDownloader? fileDownloader,
+  }) : allowedDownloadHosts = allowedDownloadHosts ?? _defaultAllowedHosts,
+       fileDownloader = fileDownloader ?? HttpClientModelFileDownloader();
 
   static const _defaultAllowedHosts = {
     'github.com',
@@ -521,11 +531,15 @@ class AsrModelManager implements ActiveModelLocator {
   /// Скачивает манифест модели по [manifestUrl] и каждый перечисленный в нём
   /// файл (по URL рядом с манифестом), затем устанавливает через тот же
   /// путь, что и ручная установка (копия + повторная SHA-256 проверка).
-  /// [onProgress] — грубая оценка 0..1 по объёму всего манифеста, для
-  /// прогресс-бара; сеть используется только здесь, инференс всегда офлайн.
+  /// Сами байты каждого файла идут через [fileDownloader] — в проде это
+  /// нативный фоновый трансфер (ADR-013), не привязанный к жизненному циклу
+  /// Dart-изолята. [onProgress] — оценка 0..1 по объёму всего манифеста,
+  /// [onSpeed] — недавняя скорость в байт/сек. Сеть используется только
+  /// здесь, инференс всегда офлайн.
   Future<String> downloadAndInstall(
     String manifestUrl, {
     void Function(double progress)? onProgress,
+    void Function(int bytesPerSecond)? onSpeed,
   }) async {
     final manifestUri = Uri.parse(manifestUrl);
     final client = HttpClient();
@@ -540,27 +554,80 @@ class AsrModelManager implements ActiveModelLocator {
       ).writeAsString(manifestText);
 
       final totalBytes = manifest.sizeBytes > 0 ? manifest.sizeBytes : 1;
-      var downloadedBytes = 0;
+      onProgress?.call(0.0);
+      var completedBytes = 0;
+      var filesLeft = manifest.files.length;
       for (final fileName in manifest.files.keys) {
         final fileUri = manifestUri.resolve(fileName);
-        final response = await _openAllowlisted(client, fileUri);
-        final sink = File(p.join(tempRoot.path, fileName)).openWrite();
-        try {
-          await for (final chunk in response) {
-            sink.add(chunk);
-            downloadedBytes += chunk.length;
-            onProgress?.call((downloadedBytes / totalBytes).clamp(0.0, 1.0));
-          }
-          await sink.flush();
-        } finally {
-          await sink.close();
-        }
+        // Финальный URL резолвится и провалидируется хоп за хопом здесь;
+        // fileDownloader (в проде — нативный код вне нашего контроля)
+        // редиректы больше не проверяет.
+        final resolvedUri = await _resolveAllowlisted(client, fileUri);
+        // Пока файл не докачан, его доля бюджета — остаток манифеста
+        // поровну на оставшиеся файлы; после каждого файла бюджет
+        // пересчитывается по фактическому размеру на диске. Точных
+        // размеров отдельных файлов манифест не хранит (encoder и
+        // tokens.txt отличаются на порядки), поэтому оценка "поровну"
+        // самоисправляется по ходу дела, а не остаётся грубой до конца.
+        final remainingBudget = totalBytes - completedBytes;
+        final assumedFileSize = filesLeft > 0
+            ? (remainingBudget / filesLeft).clamp(1, totalBytes).round()
+            : totalBytes;
+        final fileCompletedBytes = completedBytes;
+        await fileDownloader.download(
+          resolvedUri,
+          p.join(tempRoot.path, fileName),
+          onProgress: (fraction, bytesPerSecond) {
+            onProgress?.call(
+              ((fileCompletedBytes + fraction * assumedFileSize) /
+                      totalBytes)
+                  .clamp(0.0, 1.0),
+            );
+            if (bytesPerSecond > 0) onSpeed?.call(bytesPerSecond);
+          },
+        );
+        completedBytes +=
+            await File(p.join(tempRoot.path, fileName)).length();
+        filesLeft--;
       }
+      onProgress?.call(1.0);
       return await _installFiles(tempRoot, manifest);
     } finally {
       client.close(force: true);
       if (tempRoot.existsSync()) await tempRoot.delete(recursive: true);
     }
+  }
+
+  /// Как [_openAllowlisted], но HEAD без тела: только резолвит редиректы и
+  /// возвращает провалидированный финальный URL, который дальше скачивает
+  /// [fileDownloader] (в проде — нативный код, не проверяющий allowlist сам).
+  Future<Uri> _resolveAllowlisted(
+    HttpClient client,
+    Uri uri, {
+    int redirectsLeft = 5,
+  }) async {
+    _assertAllowedHost(uri);
+    final request = await client.headUrl(uri);
+    request.followRedirects = false;
+    final response = await request.close();
+    await response.drain<void>();
+    if (response.isRedirect && redirectsLeft > 0) {
+      final location = response.headers.value(HttpHeaders.locationHeader);
+      if (location == null) {
+        throw ModelPackException('редирект без Location: $uri');
+      }
+      return _resolveAllowlisted(
+        client,
+        uri.resolve(location),
+        redirectsLeft: redirectsLeft - 1,
+      );
+    }
+    if (response.statusCode != 200) {
+      throw ModelPackException(
+        'не удалось скачать $uri (HTTP ${response.statusCode})',
+      );
+    }
+    return uri;
   }
 
   Future<ModelManifest?> _readInstalledManifest(String dirName) async {

@@ -241,6 +241,7 @@ class _MobileNavigationState extends ConsumerState<_MobileNavigation> {
                 maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.78,
               ),
               child: ListView(
+                shrinkWrap: true,
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
                 children: [
                   Row(

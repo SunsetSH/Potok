@@ -58,6 +58,9 @@ dependencies:
   window_manager: 0.5.2
   tray_manager: 0.5.3
   hotkey_manager: 0.2.3
+  # ADR-013: фоновая докачка ASR-моделей — переживает сворачивание/блокировку
+  # экрана на Android (нативный трансфер вне жизненного цикла Dart-изолята).
+  background_downloader: ^9.5.6
 
 dev_dependencies:
   flutter_test:

@@ -8,7 +8,6 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../application/note_list_query.dart';
-import '../application/notes_service.dart';
 import '../application/settings_service.dart';
 import '../infrastructure/asr/model_manager.dart';
 import '../infrastructure/db/database.dart';
@@ -810,70 +809,12 @@ class _SystemSettingsSection extends ConsumerWidget {
 class _AudioSettingsSection extends ConsumerWidget {
   const _AudioSettingsSection();
 
-  Future<void> _restoreAudio(
-    BuildContext context,
-    WidgetRef ref,
-    TrashedAudioItem item,
-  ) async {
-    final messenger = ScaffoldMessenger.of(context);
-    try {
-      final service = await ref.read(notesServiceProvider.future);
-      await service.restoreAudio(item.note, item.asset);
-      ref.invalidate(storageUsageProvider);
-    } catch (error) {
-      debugPrint('audio restore failed: ${error.runtimeType}');
-      messenger.showSnackBar(
-        PotokSnackBar(content: const Text('Не удалось восстановить аудио')),
-      );
-    }
-  }
-
-  Future<void> _purgeAudio(
-    BuildContext context,
-    WidgetRef ref,
-    TrashedAudioItem item,
-  ) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Удалить аудио навсегда?'),
-        content: const Text(
-          'Файл и его ревизии расшифровки будут удалены. Это действие нельзя отменить.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Отмена'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Удалить навсегда'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !context.mounted) return;
-    final messenger = ScaffoldMessenger.of(context);
-    try {
-      final service = await ref.read(notesServiceProvider.future);
-      await service.purgeAudio(item.note, item.asset);
-      ref.invalidate(storageUsageProvider);
-    } catch (error) {
-      debugPrint('audio purge failed: ${error.runtimeType}');
-      messenger.showSnackBar(
-        PotokSnackBar(content: const Text('Не удалось удалить аудио')),
-      );
-    }
-  }
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final c = PotokColors.of(context);
     final bitRate = ref.watch(audioBitRateProvider).value ?? 64000;
     final maxMinutes = ref.watch(audioMaxMinutesProvider).value ?? 30;
     final usage = ref.watch(storageUsageProvider);
-    final trashed =
-        ref.watch(trashedAudioProvider).value ?? const <TrashedAudioItem>[];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -977,41 +918,12 @@ class _AudioSettingsSection extends ConsumerWidget {
             ),
           ),
         ),
-        if (trashed.isNotEmpty) ...[
-          const SizedBox(height: 12),
-          Text(
-            'Аудио в корзине',
-            style: TextStyle(fontWeight: FontWeight.w700, color: c.text),
-          ),
-          for (final item in trashed)
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              dense: true,
-              title: Text(
-                item.note.documentPlainText.trim().isEmpty
-                    ? 'Заметка без текста'
-                    : item.note.documentPlainText.split('\n').first,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              subtitle: Text(_formatStorage(item.asset.sizeBytes)),
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    tooltip: 'Восстановить',
-                    onPressed: () => _restoreAudio(context, ref, item),
-                    icon: const Icon(Icons.restore_rounded),
-                  ),
-                  IconButton(
-                    tooltip: 'Удалить навсегда',
-                    onPressed: () => _purgeAudio(context, ref, item),
-                    icon: const Icon(Icons.delete_forever_outlined),
-                  ),
-                ],
-              ),
-            ),
-        ],
+        const SizedBox(height: 8),
+        Text(
+          'Удалённое аудио — в общей корзине (раздел «Корзина» в списке '
+          'заметок).',
+          style: TextStyle(fontSize: 11, color: c.muted),
+        ),
       ],
     );
   }

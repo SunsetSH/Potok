@@ -212,6 +212,47 @@ class TagsService {
     });
   }
 
+  /// Мягкое удаление тега (глобального или проектного): пропадает из выбора
+  /// и с карточек — join-запросы уже фильтруют deletedAtUtc.isNull().
+  /// Назначения тега на заметках намеренно не трогаем, они просто
+  /// перестают быть видимыми вместе с самим тегом.
+  Future<void> deleteTag(Tag tag) async {
+    final now = clock.nowUtcMillis();
+    await db.transaction(() async {
+      final changed =
+          await (db.update(db.tags)..where(
+                (row) =>
+                    row.id.equals(tag.id) &
+                    row.revision.equals(tag.revision) &
+                    row.deletedAtUtc.isNull(),
+              ))
+              .write(
+                TagsCompanion(
+                  deletedAtUtc: Value(now),
+                  updatedAtUtc: Value(now),
+                  revision: Value(tag.revision + 1),
+                ),
+              );
+      if (changed == 0) {
+        throw StateError('tag was modified concurrently, retry');
+      }
+      await db
+          .into(db.operationJournal)
+          .insert(
+            OperationJournalCompanion.insert(
+              operationId: ids.newId(),
+              deviceId: deviceId,
+              entityKind: 'tag',
+              entityId: tag.id,
+              baseRevision: Value(tag.revision),
+              newRevision: Value(tag.revision + 1),
+              operationKind: 'tag.deleted',
+              occurredAtUtc: now,
+            ),
+          );
+    });
+  }
+
   /// Назначение тега с проверкой scope: project-тег допустим только на
   /// заметке своего проекта. Пишет tagsChanged (ТЗ 0.5.4).
   Future<void> assignTag(String noteId, String tagId) async {

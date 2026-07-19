@@ -23,6 +23,7 @@ import '../application/transcription_queue.dart';
 import '../domain/clock.dart';
 import '../domain/id_generator.dart';
 import '../domain/types.dart';
+import '../infrastructure/asr/model_file_downloader.dart';
 import '../infrastructure/asr/model_manager.dart';
 import '../infrastructure/asr/sherpa_recognizer_factory.dart';
 import '../infrastructure/audio_player_controller.dart';
@@ -94,6 +95,9 @@ final modelManagerProvider = FutureProvider<AsrModelManager>((ref) async {
     modelsRoot: root,
     settings: ref.watch(settingsServiceProvider),
     devFallbackDir: Platform.environment['POTOK_ASR_MODEL_DIR'],
+    // ADR-013: нативный фоновый трансфер вместо HttpClient в UI-изоляте —
+    // переживает сворачивание приложения и блокировку экрана на Android.
+    fileDownloader: BackgroundModelFileDownloader(),
   );
   return manager;
 });

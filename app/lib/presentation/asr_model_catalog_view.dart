@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
+import 'package:background_downloader/background_downloader.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -28,6 +30,7 @@ class _AsrModelCatalogViewState extends ConsumerState<AsrModelCatalogView> {
   Set<String> _installedIds = {};
   String? _downloadingId;
   double _downloadProgress = 0;
+  int _downloadBytesPerSecond = 0;
   String? _busyId;
   String? _error;
 
@@ -45,18 +48,40 @@ class _AsrModelCatalogViewState extends ConsumerState<AsrModelCatalogView> {
     }
   }
 
+  /// Уведомление о ходе фоновой загрузки — единственный способ показать
+  /// прогресс, если пользователь свернул приложение или заблокировал экран
+  /// (сама загрузка при этом продолжается, см. ADR-013). Без разрешения
+  /// докачка всё равно идёт, просто без уведомления — поэтому результат
+  /// запроса не блокирует скачивание.
+  Future<void> _ensureNotificationPermission() async {
+    if (!Platform.isAndroid) return;
+    final status = await FileDownloader().permissions.status(
+      PermissionType.notifications,
+    );
+    if (status != PermissionStatus.granted) {
+      await FileDownloader().permissions.request(PermissionType.notifications);
+    }
+  }
+
   Future<void> _download(AsrModelCatalogEntry entry) async {
     setState(() {
       _downloadingId = entry.id;
       _downloadProgress = 0;
+      _downloadBytesPerSecond = 0;
       _error = null;
     });
     try {
+      await _ensureNotificationPermission();
       final manager = await ref.read(modelManagerProvider.future);
       final modelId = await manager.downloadAndInstall(
         entry.manifestUrl,
         onProgress: (progress) {
           if (mounted) setState(() => _downloadProgress = progress);
+        },
+        onSpeed: (bytesPerSecond) {
+          if (mounted) {
+            setState(() => _downloadBytesPerSecond = bytesPerSecond);
+          }
         },
       );
       await manager.activate(modelId);
@@ -147,6 +172,9 @@ class _AsrModelCatalogViewState extends ConsumerState<AsrModelCatalogView> {
               downloadProgress: _downloadingId == entry.id
                   ? _downloadProgress
                   : null,
+              downloadBytesPerSecond: _downloadingId == entry.id
+                  ? _downloadBytesPerSecond
+                  : 0,
               onDownload: () => _download(entry),
               onActivate: () => _activate(entry.id),
               onDelete: () => _delete(entry.id),
@@ -175,6 +203,7 @@ class _CatalogModelTile extends StatelessWidget {
 
   /// non-null, когда именно эта модель сейчас скачивается (0..1).
   final double? downloadProgress;
+  final int downloadBytesPerSecond;
   final VoidCallback onDownload;
   final VoidCallback onActivate;
   final VoidCallback onDelete;
@@ -185,10 +214,21 @@ class _CatalogModelTile extends StatelessWidget {
     required this.isInstalled,
     required this.isBusy,
     required this.downloadProgress,
+    required this.downloadBytesPerSecond,
     required this.onDownload,
     required this.onActivate,
     required this.onDelete,
   });
+
+  static String _formatSpeed(int bytesPerSecond) {
+    if (bytesPerSecond >= 1024 * 1024) {
+      return '${(bytesPerSecond / (1024 * 1024)).toStringAsFixed(1)} МБ/с';
+    }
+    if (bytesPerSecond >= 1024) {
+      return '${(bytesPerSecond / 1024).toStringAsFixed(0)} КБ/с';
+    }
+    return '$bytesPerSecond Б/с';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -245,14 +285,27 @@ class _CatalogModelTile extends StatelessWidget {
                 ClipRRect(
                   borderRadius: BorderRadius.circular(999),
                   child: LinearProgressIndicator(
-                    value: downloadProgress! > 0 ? downloadProgress : null,
+                    value: downloadProgress,
                     minHeight: 6,
+                    backgroundColor: c.line,
+                    valueColor: AlwaysStoppedAnimation(c.accent),
                   ),
                 ),
                 const SizedBox(height: 4),
-                Text(
-                  '${(downloadProgress! * 100).toStringAsFixed(0)}%',
-                  style: TextStyle(fontSize: 10, color: c.muted),
+                Row(
+                  children: [
+                    Text(
+                      '${(downloadProgress! * 100).toStringAsFixed(0)}%',
+                      style: TextStyle(fontSize: 10, color: c.muted),
+                    ),
+                    if (downloadBytesPerSecond > 0) ...[
+                      const SizedBox(width: 8),
+                      Text(
+                        _formatSpeed(downloadBytesPerSecond),
+                        style: TextStyle(fontSize: 10, color: c.muted),
+                      ),
+                    ],
+                  ],
                 ),
               ],
             )

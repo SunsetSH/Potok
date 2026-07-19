@@ -1201,6 +1201,17 @@ GROUP BY project_id
     });
   }
 
+  /// Удаляет одну ревизию расшифровки (ТЗ: их можно "наплодить", нужен
+  /// способ убрать лишние). Не трогает документ заметки — только сама
+  /// ревизия пропадает из списка. Безопасно и для активной (queued/
+  /// recognizing) ревизии: воркер пишет в неё через where-guard по id,
+  /// который просто не найдёт строку и молча завершится без результата.
+  Future<void> deleteRevision(String revisionId) async {
+    await (db.delete(
+      db.transcriptRevisions,
+    )..where((r) => r.id.equals(revisionId))).go();
+  }
+
   /// Explicit user title. Empty means "return to automatic title".
   Future<void> updateTitle(Note note, String value) async {
     final normalized = value.replaceAll(RegExp(r'\s+'), ' ').trim();

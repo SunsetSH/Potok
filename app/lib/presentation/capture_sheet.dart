@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:typed_data';
 
 import 'package:file_selector/file_selector.dart';
@@ -137,6 +138,7 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
   Timer? _liveTranscriptionTimer;
   final List<int> _livePcmBytes = [];
   String _liveTranscript = '';
+  final _liveTranscriptScroll = ScrollController();
   String? _liveModelDir;
   bool _liveDecodeInFlight = false;
   int _liveGeneration = 0;
@@ -146,7 +148,13 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
   AudioRecordingFormat _recordingFormat = AudioRecordingFormat.m4a;
   int _recordingSampleRate = 44100;
   double _level = 0;
-  final List<double> _levelHistory = List<double>.filled(36, 0);
+  // growable: true — иначе removeAt/add ниже кидают UnsupportedError на
+  // первом же событии уровня, и волна визуально замирает навсегда.
+  final List<double> _levelHistory = List<double>.filled(
+    36,
+    0,
+    growable: true,
+  );
   int? _freeBytes;
   bool _storageCheckInFlight = false;
   bool _recordingPaused = false;
@@ -208,6 +216,7 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
     }
     unawaited(_recordingPlatform.setRecordingActive(false));
     _controller.dispose();
+    _liveTranscriptScroll.dispose();
     super.dispose();
   }
 
@@ -818,6 +827,16 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
               ? text
               : '$_liveTranscript $text';
         });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!_liveTranscriptScroll.hasClients) return;
+          unawaited(
+            _liveTranscriptScroll.animateTo(
+              _liveTranscriptScroll.position.maxScrollExtent,
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeOut,
+            ),
+          );
+        });
       }
     } catch (error) {
       // Preview is best-effort. The durable full-file queue still runs after
@@ -957,7 +976,11 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
             const SizedBox(height: 12),
             if (widget.attachToNote == null) ...[
               Align(
-                alignment: Alignment.centerLeft,
+                // Правшам удобнее, когда выбор проекта под большим пальцем
+                // у правого края экрана на Android.
+                alignment: Platform.isAndroid
+                    ? Alignment.centerRight
+                    : Alignment.centerLeft,
                 child: _ProjectChip(
                   projects: projects,
                   projectId: effectiveProjectId,
@@ -1010,7 +1033,9 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
               ),
               const SizedBox(height: 8),
               Align(
-                alignment: Alignment.centerLeft,
+                alignment: Platform.isAndroid
+                    ? Alignment.centerRight
+                    : Alignment.centerLeft,
                 child: OutlinedButton.icon(
                   key: const ValueKey('capture-attach-photo'),
                   onPressed: _savingNote
@@ -1053,17 +1078,28 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
                           ),
                           if (_liveModelDir != null) ...[
                             const SizedBox(height: 6),
-                            Text(
-                              _liveTranscript.isEmpty
-                                  ? 'Распознавание появится через несколько секунд…'
-                                  : _liveTranscript,
-                              key: const ValueKey('live-transcript-preview'),
-                              maxLines: 3,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 12,
-                                height: 1.35,
-                                color: c.text,
+                            ConstrainedBox(
+                              constraints: const BoxConstraints(
+                                maxHeight: 64,
+                              ),
+                              child: Scrollbar(
+                                controller: _liveTranscriptScroll,
+                                child: SingleChildScrollView(
+                                  controller: _liveTranscriptScroll,
+                                  child: Text(
+                                    _liveTranscript.isEmpty
+                                        ? 'Распознавание появится через несколько секунд…'
+                                        : _liveTranscript,
+                                    key: const ValueKey(
+                                      'live-transcript-preview',
+                                    ),
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      height: 1.35,
+                                      color: c.text,
+                                    ),
+                                  ),
+                                ),
                               ),
                             ),
                           ],

@@ -1,3 +1,4 @@
+import 'package:background_downloader/background_downloader.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_quill/flutter_quill.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -17,6 +18,16 @@ Future<void> main() async {
     // Дёшево (нет обращений к диску); нужно для tray/hide до первого кадра.
     await windowManager.ensureInitialized();
   }
+  // ADR-013: уведомление о фоновой докачке ASR-модели — единственная сеть в
+  // приложении, показывается только пока идёт явно запущенное пользователем
+  // скачивание.
+  FileDownloader().configureNotification(
+    running: const TaskNotification('Загрузка модели', '{filename} · {progress}'),
+    complete: const TaskNotification('Модель загружена', '{filename}'),
+    error: const TaskNotification('Ошибка загрузки модели', '{filename}'),
+    paused: const TaskNotification('Загрузка приостановлена', '{filename}'),
+    progressBar: true,
+  );
   runApp(const ProviderScope(child: PotokApp()));
 }
 

@@ -713,6 +713,7 @@ class _NoteCard extends ConsumerWidget {
         ? 'Аудиозаметка'
         : lines.first;
     final preview = lines.length > 1 ? lines.skip(1).join(' ') : '';
+    final searchQuery = ref.watch(searchQueryProvider).trim();
     final order = ref.watch(noteListViewSettingsProvider).order;
     final displayedAt = switch (order.field) {
       NoteSortField.createdAt ||
@@ -792,7 +793,24 @@ class _NoteCard extends ConsumerWidget {
                       ),
                     ],
                   ),
-                  if (preview.isNotEmpty) ...[
+                  if (searchQuery.isNotEmpty)
+                    _SearchSnippet(
+                      text: note.documentPlainText,
+                      query: searchQuery,
+                      fallback: preview,
+                      style: TextStyle(
+                        fontSize: 12,
+                        height: 1.42,
+                        color: c.muted,
+                      ),
+                      highlightStyle: TextStyle(
+                        fontSize: 12,
+                        height: 1.42,
+                        color: c.text,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    )
+                  else if (preview.isNotEmpty) ...[
                     const SizedBox(height: 5),
                     Text(
                       preview,
@@ -818,12 +836,21 @@ class _NoteCard extends ConsumerWidget {
                               vertical: 3,
                             ),
                             decoration: BoxDecoration(
-                              color: c.surface3,
+                              color: Color(tag.colorArgb).withValues(alpha: 0.14),
+                              border: Border.all(
+                                color: Color(
+                                  tag.colorArgb,
+                                ).withValues(alpha: 0.45),
+                              ),
                               borderRadius: BorderRadius.circular(999),
                             ),
                             child: Text(
                               tag.name,
-                              style: TextStyle(fontSize: 9, color: c.muted),
+                              style: TextStyle(
+                                fontSize: 9,
+                                fontWeight: FontWeight.w700,
+                                color: Color(tag.colorArgb),
+                              ),
                             ),
                           ),
                       ],
@@ -949,6 +976,86 @@ class _NoteCard extends ConsumerWidget {
         );
       }
     }
+  }
+}
+
+/// Первое найденное вхождение [query] в [text], без учёта регистра (Dart
+/// toLowerCase — полный Unicode casefold, работает и с кириллицей). Если
+/// вся фраза не встречается одним куском (FTS ищет слова независимо),
+/// подставляем первое слово запроса, которое реально нашлось.
+({int start, int end})? _locateSearchMatch(String text, String query) {
+  if (text.isEmpty || query.isEmpty) return null;
+  final lowerText = text.toLowerCase();
+  final lowerQuery = query.toLowerCase();
+  final direct = lowerText.indexOf(lowerQuery);
+  if (direct >= 0) return (start: direct, end: direct + query.length);
+  for (final word in lowerQuery.split(RegExp(r'\s+'))) {
+    if (word.isEmpty) continue;
+    final idx = lowerText.indexOf(word);
+    if (idx >= 0) return (start: idx, end: idx + word.length);
+  }
+  return null;
+}
+
+/// Превью карточки в режиме поиска: если совпадение найдено в середине
+/// текста, показываем окно вокруг него с жирным выделением найденного —
+/// иначе первые строки заметки были бы бесполезны для длинных заметок.
+class _SearchSnippet extends StatelessWidget {
+  final String text;
+  final String query;
+  final String fallback;
+  final TextStyle style;
+  final TextStyle highlightStyle;
+
+  const _SearchSnippet({
+    required this.text,
+    required this.query,
+    required this.fallback,
+    required this.style,
+    required this.highlightStyle,
+  });
+
+  static const _radius = 60;
+
+  @override
+  Widget build(BuildContext context) {
+    final match = _locateSearchMatch(text, query);
+    if (match == null) {
+      if (fallback.isEmpty) return const SizedBox.shrink();
+      return Padding(
+        padding: const EdgeInsets.only(top: 5),
+        child: Text(
+          fallback,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: style,
+        ),
+      );
+    }
+    final windowStart = (match.start - _radius).clamp(0, text.length);
+    final windowEnd = (match.end + _radius).clamp(0, text.length);
+    final prefix =
+        (windowStart > 0 ? '…' : '') +
+        text.substring(windowStart, match.start);
+    final middle = text.substring(match.start, match.end);
+    final suffix =
+        text.substring(match.end, windowEnd) +
+        (windowEnd < text.length ? '…' : '');
+    return Padding(
+      padding: const EdgeInsets.only(top: 5),
+      child: RichText(
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        text: TextSpan(
+          style: style,
+          children: [
+            TextSpan(text: prefix),
+            TextSpan(text: middle, style: highlightStyle),
+            TextSpan(text: suffix),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -1578,12 +1685,14 @@ class _TrashList extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final c = PotokColors.of(context);
     final page = ref.watch(visiblePagedNotesProvider).value;
+    final trashedAudio =
+        ref.watch(trashedAudioProvider).value ?? const <TrashedAudioItem>[];
     final trash = page?.notes;
     if (trash == null) {
       return const Center(child: CircularProgressIndicator());
     }
     final loadedPage = page!;
-    if (trash.isEmpty) {
+    if (trash.isEmpty && trashedAudio.isEmpty) {
       return Center(
         child: Text(
           'Корзина пуста',
@@ -1592,6 +1701,8 @@ class _TrashList extends ConsumerWidget {
       );
     }
     final bulkSelectedIds = ref.watch(bulkSelectedNoteIdsProvider);
+    final audioHeaderCount = trashedAudio.isNotEmpty ? 1 : 0;
+    final audioOffset = audioHeaderCount + trashedAudio.length;
     return NotificationListener<ScrollNotification>(
       onNotification: (notification) {
         if (notification.metrics.extentAfter < 600 && loadedPage.hasMore) {
@@ -1602,9 +1713,23 @@ class _TrashList extends ConsumerWidget {
       child: ListView.builder(
         key: const ValueKey('paged-trash-list'),
         padding: const EdgeInsets.all(12),
-        itemCount: trash.length + (loadedPage.loadingMore ? 1 : 0),
+        itemCount:
+            audioOffset + trash.length + (loadedPage.loadingMore ? 1 : 0),
         itemBuilder: (context, index) {
-          if (index == trash.length) {
+          if (audioHeaderCount > 0 && index == 0) {
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Text(
+                'Аудио в корзине',
+                style: TextStyle(fontWeight: FontWeight.w700, color: c.text),
+              ),
+            );
+          }
+          if (index < audioOffset) {
+            return _TrashedAudioTile(item: trashedAudio[index - audioHeaderCount]);
+          }
+          final noteIndex = index - audioOffset;
+          if (noteIndex == trash.length) {
             return const Padding(
               padding: EdgeInsets.all(16),
               child: Center(
@@ -1615,7 +1740,7 @@ class _TrashList extends ConsumerWidget {
               ),
             );
           }
-          final note = trash[index];
+          final note = trash[noteIndex];
           final bulkSelected = bulkSelectedIds.contains(note.id);
           final lines = note.documentPlainText
               .split('\n')
@@ -1630,7 +1755,7 @@ class _TrashList extends ConsumerWidget {
                   ).toLocal(),
                   DateTime.now(),
                 );
-          return Container(
+          final noteCard = Container(
             margin: const EdgeInsets.only(bottom: 6),
             padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 6),
             decoration: BoxDecoration(
@@ -1707,7 +1832,128 @@ class _TrashList extends ConsumerWidget {
               ],
             ),
           );
+          if (noteIndex == 0 && audioHeaderCount > 0) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  child: Text(
+                    'Заметки в корзине',
+                    style: TextStyle(fontWeight: FontWeight.w700, color: c.text),
+                  ),
+                ),
+                noteCard,
+              ],
+            );
+          }
+          return noteCard;
         },
+      ),
+    );
+  }
+}
+
+class _TrashedAudioTile extends ConsumerWidget {
+  final TrashedAudioItem item;
+
+  const _TrashedAudioTile({required this.item});
+
+  Future<void> _restore(BuildContext context, WidgetRef ref) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final service = await ref.read(notesServiceProvider.future);
+      await service.restoreAudio(item.note, item.asset);
+    } catch (error) {
+      debugPrint('audio restore failed: ${error.runtimeType}');
+      messenger.showSnackBar(
+        PotokSnackBar(content: const Text('Не удалось восстановить аудио')),
+      );
+    }
+  }
+
+  Future<void> _purge(BuildContext context, WidgetRef ref) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Удалить аудио навсегда?'),
+        content: const Text(
+          'Файл и его ревизии расшифровки будут удалены. '
+          'Это действие нельзя отменить.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: PotokColors.of(dialogContext).danger,
+            ),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Удалить навсегда'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final service = await ref.read(notesServiceProvider.future);
+      await service.purgeAudio(item.note, item.asset);
+    } catch (error) {
+      debugPrint('audio purge failed: ${error.runtimeType}');
+      messenger.showSnackBar(
+        PotokSnackBar(content: const Text('Не удалось удалить аудио')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final c = PotokColors.of(context);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 6),
+      decoration: BoxDecoration(
+        color: c.surface2,
+        border: Border.all(color: c.line),
+        borderRadius: BorderRadius.circular(c.radiusSmall),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.mic_none_rounded, size: 18, color: c.muted),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  item.note.documentPlainText.trim().isEmpty
+                      ? 'Заметка без текста'
+                      : item.note.documentPlainText.split('\n').first,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 13, color: c.text),
+                ),
+                Text(
+                  '${(item.asset.sizeBytes / 1024).ceil()} КБ',
+                  style: TextStyle(fontSize: 10, color: c.muted),
+                ),
+              ],
+            ),
+          ),
+          TextButton(
+            onPressed: () => _restore(context, ref),
+            child: const Text('Восстановить'),
+          ),
+          IconButton(
+            key: ValueKey('purge-audio-${item.asset.id}'),
+            tooltip: 'Удалить навсегда',
+            onPressed: () => _purge(context, ref),
+            icon: Icon(Icons.delete_forever_rounded, color: c.danger),
+          ),
+        ],
       ),
     );
   }

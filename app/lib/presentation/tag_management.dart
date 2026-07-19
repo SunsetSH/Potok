@@ -5,6 +5,7 @@ import '../domain/types.dart';
 import '../infrastructure/db/database.dart';
 import 'entity_color_palette.dart';
 import 'providers.dart';
+import 'snackbars.dart';
 import 'theme.dart';
 
 /// Creates or edits a tag. Existing scope is immutable by design; creation
@@ -236,6 +237,42 @@ class _TagEditorDialogState extends ConsumerState<_TagEditorDialog> {
 class TagManagementSection extends ConsumerWidget {
   const TagManagementSection({super.key});
 
+  Future<void> _delete(BuildContext context, WidgetRef ref, Tag tag) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Удалить тег?'),
+        content: Text(
+          'Тег «${tag.name}» будет удалён и снят со всех заметок.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: PotokColors.of(dialogContext).danger,
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final service = await ref.read(tagsServiceProvider.future);
+      await service.deleteTag(tag);
+    } catch (e) {
+      debugPrint('tag delete failed: ${e.runtimeType}');
+      messenger.showSnackBar(
+        PotokSnackBar(content: const Text('Не удалось удалить тег')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final c = PotokColors.of(context);
@@ -279,11 +316,26 @@ class TagManagementSection extends ConsumerWidget {
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(fontSize: 11, color: c.muted),
                   ),
-                  trailing: IconButton(
-                    tooltip: 'Редактировать тег',
-                    onPressed: () =>
-                        showTagEditorDialog(context, ref, tag: tag),
-                    icon: const Icon(Icons.edit_outlined, size: 18),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        tooltip: 'Редактировать тег',
+                        onPressed: () =>
+                            showTagEditorDialog(context, ref, tag: tag),
+                        icon: const Icon(Icons.edit_outlined, size: 18),
+                      ),
+                      IconButton(
+                        key: ValueKey('delete-tag-${tag.id}'),
+                        tooltip: 'Удалить тег',
+                        onPressed: () => _delete(context, ref, tag),
+                        icon: Icon(
+                          Icons.delete_outline_rounded,
+                          size: 18,
+                          color: c.danger,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
             ],
