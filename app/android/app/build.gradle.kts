@@ -124,7 +124,10 @@ val prepareReleaseSqliteNativeAssets by tasks.registering {
     }
 }
 
-tasks.matching { it.name == "mergeReleaseJniLibFolders" }.configureEach {
+// Flutter 3.44 registers its native-assets directory through the generated
+// copyJniLibsFlutterRelease source. SQLite must exist before that task snapshots
+// the directory; wiring it only to AGP's later merge task is already too late.
+tasks.matching { it.name == "copyJniLibsFlutterRelease" }.configureEach {
     dependsOn(prepareReleaseSqliteNativeAssets)
 }
 

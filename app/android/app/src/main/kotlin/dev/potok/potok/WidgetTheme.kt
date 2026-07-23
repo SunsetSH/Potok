@@ -6,6 +6,7 @@ import android.content.res.Configuration
 import android.graphics.Color
 import android.os.Build
 import android.widget.RemoteViews
+import kotlin.math.roundToInt
 
 data class WidgetThemePalette(
     val background: Int,
@@ -20,6 +21,16 @@ data class WidgetThemePalette(
 )
 
 enum class WidgetColorRole { BACKGROUND, SOFT, ACCENT, TEXT, MUTED, ACCENT_TEXT }
+
+/**
+ * RemoteViews applies setBackgroundResource after XML inflation. Some Android
+ * versions then replace the padding declared in XML with the drawable padding,
+ * so themed views must restore their content insets explicitly.
+ */
+data class WidgetPadding(
+    val horizontalDp: Int,
+    val verticalDp: Int = horizontalDp,
+)
 
 object WidgetTheme {
     private val allowed = setOf("studio", "studio-night", "paper", "terminal")
@@ -64,8 +75,15 @@ object WidgetTheme {
         viewId: Int,
         drawable: Int,
         role: WidgetColorRole,
+        padding: WidgetPadding? = null,
     ) {
         views.setInt(viewId, "setBackgroundResource", drawable)
+        padding?.let {
+            val density = context.resources.displayMetrics.density
+            val horizontal = (it.horizontalDp * density).roundToInt()
+            val vertical = (it.verticalDp * density).roundToInt()
+            views.setViewPadding(viewId, horizontal, vertical, horizontal, vertical)
+        }
         val pair = systemPair(context) ?: return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             views.setColorStateList(

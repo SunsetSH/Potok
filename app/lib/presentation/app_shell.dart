@@ -131,9 +131,7 @@ class _Shell extends ConsumerWidget {
   void _openNote(BuildContext context, WidgetRef ref, Note note, bool wide) {
     ref.read(selectedNoteIdProvider.notifier).select(note.id);
     if (!wide) {
-      Navigator.of(
-        context,
-      ).push(MaterialPageRoute<void>(builder: (_) => const _DetailPage()));
+      showMobileNoteDetailRoute(context);
     }
   }
 
@@ -387,6 +385,29 @@ class _CaptureFab extends StatelessWidget {
 /// [selectedNoteIdProvider], который читает detail-панель.
 Route<void> buildNoteDetailRoute() =>
     MaterialPageRoute<void>(builder: (_) => const _DetailPage());
+
+final _mobileNoteDetailRouteGate = MobileNoteDetailRouteGate();
+
+/// Prevents duplicate mobile detail routes while allowing a widget deep-link
+/// to change the selected note without waiting for the current route to close.
+class MobileNoteDetailRouteGate {
+  bool _active = false;
+
+  void open(Future<void> Function() push) {
+    if (_active) return;
+    _active = true;
+    unawaited(Future<void>.sync(push).whenComplete(() => _active = false));
+  }
+}
+
+/// Keeps a single mobile detail surface alive. Widget deep-links can then
+/// switch [selectedNoteIdProvider] immediately instead of stacking another
+/// page behind the note that is already visible.
+void showMobileNoteDetailRoute(BuildContext context) {
+  _mobileNoteDetailRouteGate.open(
+    () => Navigator.of(context).push(buildNoteDetailRoute()),
+  );
+}
 
 class _DetailPage extends StatelessWidget {
   const _DetailPage();

@@ -22,12 +22,9 @@ Future<void> main() async {
     // Дёшево (нет обращений к диску); нужно для tray/hide до первого кадра.
     await windowManager.ensureInitialized();
   }
-  // Свежий процесс — значит запись гарантированно не идёт (её состояние жило
-  // только в памяти предыдущего процесса). Если предыдущий процесс убили
-  // прямо во время записи, Dart-код очистки (dispose()) не успел выполниться,
-  // и уведомление foreground-сервиса на Android могло остаться висеть.
-  // Сбрасываем его безусловно при каждом старте — идемпотентно и не мешает,
-  // даже если ничего убирать не нужно.
+  // Снимает только Flutter-owned recording contract. Нативная запись,
+  // запущенная из Android-виджета, принадлежит тому же foreground service,
+  // но не должна прерываться при последующем открытии приложения.
   unawaited(MethodChannelRecordingPlatform().setRecordingActive(false));
   // ADR-013: уведомление о фоновой докачке ASR-модели — единственная сеть в
   // приложении, показывается только пока идёт явно запущенное пользователем
@@ -76,6 +73,8 @@ class PotokApp extends ConsumerWidget {
     ref.watch(androidWidgetSyncProvider);
     ref.watch(androidWidgetDataSyncProvider);
     ref.watch(androidWidgetThemeSyncProvider);
+    ref.watch(widgetRecordingImportProvider);
+    ref.watch(widgetRecordingEventProvider);
     ref.watch(asrDownloadRecoveryProvider);
     // Пока настройка не прочитана — Studio Light (дефолт ТЗ 0.6.6).
     final themeId = ref.watch(themeIdProvider).value ?? PotokThemeId.studio;

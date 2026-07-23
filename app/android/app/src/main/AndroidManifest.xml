@@ -55,6 +55,7 @@
         </activity>
         <receiver
             android:name=".QuickCaptureWidgetProvider"
+            android:label="@string/widget_quick_name"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
@@ -63,9 +64,21 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/quick_capture_widget_info" />
         </receiver>
+        <receiver
+            android:name=".VoiceRecordingWidgetProvider"
+            android:label="@string/widget_voice_name"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/voice_recording_widget_info" />
+        </receiver>
         <!-- Виджет: последняя добавленная заметка. -->
         <receiver
             android:name=".RecentNoteWidgetProvider"
+            android:label="@string/widget_recent_name"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
@@ -77,6 +90,7 @@
         <!-- Виджет: прокручиваемый список последних заметок. -->
         <receiver
             android:name=".NoteListWidgetProvider"
+            android:label="@string/widget_list_name"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
@@ -88,6 +102,7 @@
         <!-- Виджет: выбранная заметка или последняя в проекте (с настройкой). -->
         <receiver
             android:name=".SelectableNoteWidgetProvider"
+            android:label="@string/widget_selectable_name"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />

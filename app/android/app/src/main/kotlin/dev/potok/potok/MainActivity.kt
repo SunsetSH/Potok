@@ -16,9 +16,15 @@ import java.util.ArrayDeque
 class MainActivity : FlutterActivity() {
     companion object {
         private const val launchChannelName = "dev.potok/launch_intents"
+        private const val widgetRecordingChannelName = "dev.potok/widget_recordings"
         private const val maxPendingLaunches = 8
         private const val maxSharedTextCodePoints = 100_000
         private val projectIdPattern = Regex("^[A-Za-z0-9_-]{1,128}$")
+        @Volatile private var widgetRecordingChannel: MethodChannel? = null
+
+        fun notifyWidgetRecordingAvailable() {
+            widgetRecordingChannel?.invokeMethod("recordingAvailable", null)
+        }
     }
 
     private val pendingLaunches = ArrayDeque<Map<String, Any?>>()
@@ -59,6 +65,10 @@ class MainActivity : FlutterActivity() {
         launchChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             launchChannelName,
+        )
+        widgetRecordingChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            widgetRecordingChannelName,
         )
         launchChannel.setMethodCallHandler { call, result ->
             when (call.method) {
@@ -126,6 +136,16 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    override fun onDestroy() {
+        widgetRecordingChannel = null
+        super.onDestroy()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        VoiceRecordingWidgetProvider.updateAll(this)
+    }
+
     private fun enqueueLaunch(source: Intent?): Boolean {
         if (source == null) return false
         val request = when (source.action) {
@@ -148,6 +168,7 @@ class MainActivity : FlutterActivity() {
 
     private fun refreshAllNoteWidgets() {
         QuickCaptureWidgetProvider.updateAll(this)
+        VoiceRecordingWidgetProvider.updateAll(this)
         RecentNoteWidgetProvider.updateAll(this)
         SelectableNoteWidgetProvider.updateAll(this)
         NoteListWidgetProvider.updateAll(this)
@@ -179,7 +200,13 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun setRecordingActive(active: Boolean) {
-        val service = Intent(this, RecordingForegroundService::class.java)
+        val service = Intent(this, RecordingForegroundService::class.java).apply {
+            action = if (active) {
+                RecordingForegroundService.ACTION_UI_ACTIVE
+            } else {
+                RecordingForegroundService.ACTION_UI_INACTIVE
+            }
+        }
         if (active) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                 ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
@@ -191,7 +218,7 @@ class MainActivity : FlutterActivity() {
             ContextCompat.startForegroundService(this, service)
         } else {
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            stopService(service)
+            startService(service)
         }
     }
 }

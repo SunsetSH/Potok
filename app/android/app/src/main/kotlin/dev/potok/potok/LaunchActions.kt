@@ -20,6 +20,8 @@ object LaunchActions {
     const val WIDGET_THEME_FIXED = "theme_fixed"
     const val WIDGET_THEME_LIGHT = "theme_light"
     const val WIDGET_THEME_DARK = "theme_dark"
+    const val WIDGET_VOICE_RECORDING_ACTIVE = "voice_recording_active"
+    const val WIDGET_VOICE_RECORDING_STATUS = "voice_recording_status"
 
     /** Префикс ключа выбора конфигурируемого виджета по appWidgetId. */
     const val WIDGET_SELECTION_PREFIX = "selection_"

@@ -3,6 +3,7 @@ package dev.potok.potok
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -131,6 +132,14 @@ object WidgetData {
     fun openNoteIntent(context: Context, requestCode: Int, noteId: String): PendingIntent {
         val intent = Intent(context, MainActivity::class.java).apply {
             action = LaunchActions.OPEN_NOTE
+            // PendingIntent identity ignores extras. A stable note-specific URI
+            // prevents launchers from reusing the previous note on another row.
+            data = Uri.Builder()
+                .scheme("potok")
+                .authority("widget")
+                .appendPath("note")
+                .appendPath(noteId)
+                .build()
             flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra(LaunchActions.EXTRA_NOTE_ID, noteId)
         }

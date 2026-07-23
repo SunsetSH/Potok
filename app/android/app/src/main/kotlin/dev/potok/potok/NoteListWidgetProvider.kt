@@ -30,6 +30,7 @@ class NoteListWidgetProvider : AppWidgetProvider() {
             val palette = WidgetTheme.current(context)
             WidgetTheme.applyBackground(
                 context, views, R.id.note_list_root, palette.background, WidgetColorRole.BACKGROUND,
+                padding = WidgetPadding(10),
             )
             WidgetTheme.applyTextColor(context, views, R.id.note_list_title, WidgetColorRole.TEXT)
             WidgetTheme.applyTextColor(context, views, R.id.note_list_empty, WidgetColorRole.MUTED)
@@ -64,6 +65,7 @@ class NoteListWidgetProvider : AppWidgetProvider() {
     ) {
         WidgetTheme.applyBackground(
             context, views, R.id.list_item_root, palette.soft, WidgetColorRole.SOFT,
+            padding = WidgetPadding(horizontalDp = 12, verticalDp = 10),
         )
         WidgetTheme.applyTextColor(context, views, R.id.list_item_title, WidgetColorRole.TEXT)
         WidgetTheme.applyTextColor(context, views, R.id.list_item_snippet, WidgetColorRole.MUTED)

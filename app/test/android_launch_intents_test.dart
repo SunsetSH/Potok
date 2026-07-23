@@ -3,6 +3,7 @@ import 'dart:collection';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:potok/presentation/app_shell.dart';
 import 'package:potok/presentation/android_launch_intents.dart';
 
 void main() {
@@ -60,6 +61,25 @@ void main() {
     await port.notifyAvailable();
     expect(presented.last, AndroidLaunchKind.share);
     integration.dispose();
+  });
+
+  test('mobile note detail gate does not stack a second route', () async {
+    final gate = MobileNoteDetailRouteGate();
+    final firstRoute = Completer<void>();
+    var pushes = 0;
+
+    gate.open(() {
+      pushes += 1;
+      return firstRoute.future;
+    });
+    gate.open(() async => pushes += 1);
+    expect(pushes, 1);
+
+    firstRoute.complete();
+    await firstRoute.future;
+    await Future<void>.delayed(Duration.zero);
+    gate.open(() async => pushes += 1);
+    expect(pushes, 2);
   });
 
   test('widget data uses the launch-intents native channel', () async {

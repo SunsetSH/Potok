@@ -39,6 +39,7 @@ object NoteCardRenderer {
         val palette = WidgetTheme.current(context)
         WidgetTheme.applyBackground(
             context, views, R.id.note_card_root, palette.background, WidgetColorRole.BACKGROUND,
+            padding = WidgetPadding(14),
         )
         WidgetTheme.applyTextColor(context, views, R.id.note_card_title, WidgetColorRole.TEXT)
         WidgetTheme.applyTextColor(context, views, R.id.note_card_snippet, WidgetColorRole.MUTED)
@@ -46,6 +47,7 @@ object NoteCardRenderer {
         WidgetTheme.applyTextColor(context, views, R.id.note_card_project, WidgetColorRole.ACCENT)
         WidgetTheme.applyBackground(
             context, views, R.id.note_card_project, palette.soft, WidgetColorRole.SOFT,
+            padding = WidgetPadding(horizontalDp = 9, verticalDp = 3),
         )
         if (note == null) {
             views.setViewVisibility(R.id.note_card_content, View.GONE)

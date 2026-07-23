@@ -161,6 +161,33 @@ void main() {
   });
 
   group('audio lifecycle', () {
+    test(
+      'widget audio import resumes staging and is idempotent after publish',
+      () async {
+        const inboxId = '019c0000-0000-7000-8000-000000000001';
+        final staged = await service.beginOrResumeWidgetAudioNote(inboxId);
+        expect(staged, isNotNull);
+        final resumed = await service.beginOrResumeWidgetAudioNote(inboxId);
+        expect(resumed?.noteId, staged?.noteId);
+        expect(resumed?.assetId, staged?.assetId);
+
+        await File(staged!.stagingPath).writeAsBytes(_validWavBytes);
+        await service.finishAudioNote(
+          staged,
+          duration: const Duration(seconds: 1),
+          codec: 'pcm16-wav',
+          sampleRateHz: 16000,
+          channels: 1,
+        );
+
+        expect(await service.beginOrResumeWidgetAudioNote(inboxId), isNull);
+        final notes = await service.watchNotes().first;
+        expect(notes, hasLength(1));
+        expect(notes.single.id, inboxId);
+        expect(notes.single.sourceKind, SourceKind.widget);
+      },
+    );
+
     test('staged note is invisible until finalized', () async {
       final staged = await service.beginAudioNote(extension: 'wav');
       expect(await service.watchNotes().first, isEmpty);

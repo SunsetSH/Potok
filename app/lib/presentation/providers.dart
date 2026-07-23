@@ -21,6 +21,7 @@ import '../application/storage_usage_service.dart';
 import '../application/tags_service.dart';
 import '../application/transcription_queue.dart';
 import '../application/voice_classification_coordinator.dart';
+import '../application/widget_recording_import_service.dart';
 import '../domain/clock.dart';
 import '../domain/id_generator.dart';
 import '../domain/types.dart';
@@ -34,6 +35,7 @@ import '../infrastructure/db/device_identity.dart';
 import '../infrastructure/media_store.dart';
 import '../infrastructure/recording_platform.dart';
 import '../infrastructure/system_clipboard_image_reader.dart';
+import '../infrastructure/widget_recording_inbox.dart';
 import 'theme.dart';
 
 // ---------- DI ----------
@@ -215,6 +217,37 @@ final notesServiceProvider = FutureProvider<NotesService>((ref) async {
     ids: ref.watch(idGeneratorProvider),
     deviceId: await ref.watch(deviceIdProvider.future),
   );
+});
+
+/// Imports WAV files completed by the one-tap Android widget. The native
+/// service owns only a bounded filesystem inbox; publication stays in Domain.
+final widgetRecordingImportProvider =
+    FutureProvider<WidgetRecordingImportReport?>((ref) async {
+      if (!Platform.isAndroid) return null;
+      final support = await getApplicationSupportDirectory();
+      final importer = WidgetRecordingImportService(
+        notes: await ref.watch(notesServiceProvider.future),
+        inbox: WidgetRecordingInbox(
+          Directory(p.join(support.path, 'widget_recording_inbox')),
+        ),
+        onPublished: (noteId, assetId) async {
+          await ref.read(automaticTranscriptionEnqueueProvider)(
+            noteId,
+            assetId,
+            '',
+          );
+        },
+      );
+      return importer.importPending();
+    });
+
+final widgetRecordingEventProvider = Provider<void>((ref) {
+  if (!Platform.isAndroid) return;
+  final port = WidgetRecordingEventPort();
+  port.listen(() async {
+    ref.invalidate(widgetRecordingImportProvider);
+  });
+  ref.onDispose(() => port.listen(null));
 });
 
 final projectsServiceProvider = FutureProvider<ProjectsService>((ref) async {

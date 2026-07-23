@@ -35,6 +35,7 @@ class QuickCaptureWidgetProvider : AppWidgetProvider() {
             val views = RemoteViews(context.packageName, R.layout.quick_capture_widget)
             WidgetTheme.applyBackground(
                 context, views, R.id.widget_root, palette.background, WidgetColorRole.BACKGROUND,
+                padding = WidgetPadding(10),
             )
             WidgetTheme.applyBackground(
                 context, views, R.id.widget_text, palette.soft, WidgetColorRole.SOFT,

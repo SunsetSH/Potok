@@ -301,7 +301,9 @@ Future<void> _openNoteFromWidget(Ref ref, String noteId) async {
   // Широкий макет показывает выбранную заметку в постоянной detail-панели —
   // отдельный маршрут нужен только на узком.
   if (MediaQuery.sizeOf(context).width < 900) {
-    await Navigator.of(context).push(buildNoteDetailRoute());
+    // Не ждём закрытия страницы: иначе очередь launch-intent остаётся
+    // заблокированной и следующий тап по виджету обрабатывается лишь после Back.
+    showMobileNoteDetailRoute(context);
   }
 }
 

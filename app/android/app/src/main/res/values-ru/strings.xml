@@ -12,4 +12,24 @@
     <string name="widget_audio">+Аудио</string>
     <string name="widget_text_description">Создать текстовую заметку</string>
     <string name="widget_audio_description">Начать аудиозаметку</string>
+    <string name="widget_quick_name">Быстрая заметка</string>
+    <string name="widget_recent_name">Последняя заметка</string>
+    <string name="widget_list_name">Список заметок</string>
+    <string name="widget_selectable_name">Выбранная заметка</string>
+    <string name="widget_voice_name">Запись голоса</string>
+    <string name="widget_voice_description">Записать голосовую заметку, не открывая Поток</string>
+    <string name="widget_voice_start">Записать</string>
+    <string name="widget_voice_stop">Остановить</string>
+    <string name="widget_voice_permission">Разрешить микрофон</string>
+    <string name="widget_voice_storage">Недостаточно места</string>
+    <string name="widget_voice_busy">Запись уже идёт</string>
+    <string name="widget_voice_error">Ошибка микрофона</string>
+    <string name="recording_notification_title">Поток записывает аудио</string>
+    <string name="recording_notification_text">Нажмите «Остановить», когда заметка готова</string>
+    <string name="recording_notification_stop">Остановить</string>
+    <string name="widget_recent_description">Последняя заметка Потока</string>
+    <string name="widget_list_description">Список последних заметок Потока</string>
+    <string name="widget_selectable_description">Выбранная заметка или проект Потока</string>
+    <string name="widget_list_title">Заметки</string>
+    <string name="widget_empty_note">Заметок пока нет</string>
 </resources>

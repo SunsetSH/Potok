@@ -784,6 +784,95 @@ GROUP BY project_id
     );
   }
 
+  /// Idempotent bridge for a WAV recorded by the native Android widget.
+  /// Stable IDs let startup retry after any process-death boundary without
+  /// publishing a duplicate note. Native code still never writes SQLite.
+  Future<StagedRecording?> beginOrResumeWidgetAudioNote(String inboxId) async {
+    if (!RegExp(r'^[A-Za-z0-9-]{1,64}$').hasMatch(inboxId)) {
+      throw ArgumentError.value(
+        inboxId,
+        'inboxId',
+        'unsafe widget recording id',
+      );
+    }
+    final noteId = inboxId;
+    final assetId = '${inboxId}_audio';
+    final existingAsset = await (db.select(
+      db.mediaAssets,
+    )..where((row) => row.id.equals(assetId))).getSingleOrNull();
+    if (existingAsset != null) {
+      if (existingAsset.ownerNoteId != noteId ||
+          existingAsset.kind != AssetKind.audio) {
+        throw StateError('widget recording id collision');
+      }
+      if (existingAsset.lifecycleState == AssetLifecycle.ready) return null;
+      if (existingAsset.lifecycleState != AssetLifecycle.staging) {
+        throw StateError('widget recording asset cannot be resumed');
+      }
+      final note = await (db.select(
+        db.notes,
+      )..where((row) => row.id.equals(noteId))).getSingle();
+      return StagedRecording(
+        noteId: noteId,
+        assetId: assetId,
+        relativePath: existingAsset.relativePath,
+        stagingPath: media.stagingPath(existingAsset.relativePath),
+        createsNote: note.deletedAtUtc != null,
+      );
+    }
+
+    final existingNote = await (db.select(
+      db.notes,
+    )..where((row) => row.id.equals(noteId))).getSingleOrNull();
+    if (existingNote != null) throw StateError('widget recording id collision');
+
+    final relativePath = media.relativePathFor(assetId, 'wav');
+    await media.prepareStaging(relativePath);
+    final now = clock.nowUtcMillis();
+    try {
+      await db.transaction(() async {
+        await db
+            .into(db.notes)
+            .insert(
+              NotesCompanion.insert(
+                id: noteId,
+                documentJson: const PotokDocument.empty().encode(),
+                documentPlainText: '',
+                sourceKind: SourceKind.widget,
+                isHidden: const Value(true),
+                createdAtUtc: now,
+                updatedAtUtc: now,
+                deletedAtUtc: Value(now),
+              ),
+            );
+        await db
+            .into(db.mediaAssets)
+            .insert(
+              MediaAssetsCompanion.insert(
+                id: assetId,
+                ownerNoteId: noteId,
+                kind: AssetKind.audio,
+                relativePath: relativePath,
+                mimeType: 'audio/wav',
+                lifecycleState: AssetLifecycle.staging,
+                createdAtUtc: now,
+                updatedAtUtc: now,
+              ),
+            );
+      });
+    } catch (_) {
+      await media.discardStaging(relativePath);
+      rethrow;
+    }
+    return StagedRecording(
+      noteId: noteId,
+      assetId: assetId,
+      relativePath: relativePath,
+      stagingPath: media.stagingPath(relativePath),
+      createsNote: true,
+    );
+  }
+
   /// Adds another independent recording to an existing visible note.
   Future<StagedRecording> beginAudioAttachment(
     Note note, {
