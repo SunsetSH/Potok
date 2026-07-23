@@ -25,6 +25,7 @@ class QuickCaptureWidgetProvider : AppWidgetProvider() {
         appWidgetManager: AppWidgetManager,
         appWidgetIds: IntArray,
     ) {
+        val palette = WidgetTheme.current(context)
         appWidgetIds.forEach { appWidgetId ->
             val preferences = context.getSharedPreferences(
                 LaunchActions.WIDGET_PREFS,
@@ -32,6 +33,19 @@ class QuickCaptureWidgetProvider : AppWidgetProvider() {
             )
             val projectId = preferences.getString(LaunchActions.WIDGET_PROJECT_ID, null)
             val views = RemoteViews(context.packageName, R.layout.quick_capture_widget)
+            WidgetTheme.applyBackground(
+                context, views, R.id.widget_root, palette.background, WidgetColorRole.BACKGROUND,
+            )
+            WidgetTheme.applyBackground(
+                context, views, R.id.widget_text, palette.soft, WidgetColorRole.SOFT,
+            )
+            WidgetTheme.applyBackground(
+                context, views, R.id.widget_audio, palette.accentBackground, WidgetColorRole.ACCENT,
+            )
+            WidgetTheme.applyTextColor(context, views, R.id.widget_text_label, WidgetColorRole.ACCENT)
+            WidgetTheme.applyTextColor(context, views, R.id.widget_audio_label, WidgetColorRole.ACCENT_TEXT)
+            WidgetTheme.applyIconColor(context, views, R.id.widget_text_icon, WidgetColorRole.ACCENT)
+            WidgetTheme.applyIconColor(context, views, R.id.widget_audio_icon, WidgetColorRole.ACCENT_TEXT)
             views.setOnClickPendingIntent(
                 R.id.widget_text,
                 captureIntent(context, LaunchActions.NEW_TEXT, appWidgetId * 2, projectId),

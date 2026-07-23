@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.StatFs
+import android.util.Log
 import android.view.WindowManager
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
@@ -79,6 +80,35 @@ class MainActivity : FlutterActivity() {
                     QuickCaptureWidgetProvider.updateAll(this)
                     result.success(null)
                 }
+                "setWidgetData" -> {
+                    val committed = WidgetData.writeData(
+                        this,
+                        call.argument<String>("notes"),
+                        call.argument<String>("projects"),
+                    )
+                    if (!committed) {
+                        result.error("widget_cache_write_failed", "Widget cache unavailable", null)
+                        return@setMethodCallHandler
+                    }
+                    Log.i(
+                        "PotokWidgets",
+                        "cache updated notes=${WidgetData.notes(this).size} " +
+                            "projects=${WidgetData.projects(this).size}",
+                    )
+                    refreshAllNoteWidgets()
+                    result.success(null)
+                }
+                "setWidgetTheme" -> {
+                    WidgetTheme.write(
+                        this,
+                        call.argument<String>("mode"),
+                        call.argument<String>("fixed"),
+                        call.argument<String>("light"),
+                        call.argument<String>("dark"),
+                    )
+                    refreshAllNoteWidgets()
+                    result.success(null)
+                }
                 else -> result.notImplemented()
             }
         }
@@ -101,12 +131,26 @@ class MainActivity : FlutterActivity() {
         val request = when (source.action) {
             LaunchActions.NEW_TEXT -> launchRequest("text", source)
             LaunchActions.NEW_AUDIO -> launchRequest("audio", source)
+            LaunchActions.OPEN_NOTE -> openNoteRequest(source)
             Intent.ACTION_SEND -> shareRequest(source)
             else -> null
         } ?: return false
         if (pendingLaunches.size >= maxPendingLaunches) pendingLaunches.removeFirst()
         pendingLaunches.addLast(request)
         return true
+    }
+
+    private fun openNoteRequest(source: Intent): Map<String, Any?>? {
+        val noteId = source.getStringExtra(LaunchActions.EXTRA_NOTE_ID)
+            ?.takeIf(projectIdPattern::matches) ?: return null
+        return mapOf("kind" to "openNote", "noteId" to noteId)
+    }
+
+    private fun refreshAllNoteWidgets() {
+        QuickCaptureWidgetProvider.updateAll(this)
+        RecentNoteWidgetProvider.updateAll(this)
+        SelectableNoteWidgetProvider.updateAll(this)
+        NoteListWidgetProvider.updateAll(this)
     }
 
     private fun launchRequest(kind: String, source: Intent): Map<String, Any?> {

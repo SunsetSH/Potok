@@ -1,5 +1,13 @@
 import 'package:flutter/material.dart';
 
+enum PotokThemeMode {
+  fixed,
+  system;
+
+  static PotokThemeMode fromStorage(String? value) =>
+      value == system.name ? system : fixed;
+}
+
 /// Четыре темы прототипа (ТЗ 0.6.6). Идентификаторы совпадают с
 /// data-theme из HTML-прототипа и хранятся в app_meta под ключом 'theme'.
 enum PotokThemeId {
@@ -20,6 +28,8 @@ enum PotokThemeId {
     }
     return PotokThemeId.studio;
   }
+
+  bool get isDark => this == studioNight || this == terminal;
 }
 
 /// Дизайн-токены прототипа (CSS-переменные) как ThemeExtension:

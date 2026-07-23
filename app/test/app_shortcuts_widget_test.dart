@@ -165,6 +165,7 @@ void main() {
 
     final field = tester.widget<TextField>(find.byType(TextField));
     expect(field.controller?.text, 'existing draft\n\nshared text');
+    expect(field.autofocus, isFalse);
     final storedDraft = await drafts.load('quick-capture');
     expect(
       PotokDocument.decode(storedDraft!.documentJson).plainText,
@@ -329,7 +330,8 @@ void main() {
   group('quick capture with audio autostart (Ctrl+Shift+N)', () {
     Widget capture(
       _FakeAudioRecorder recorder, {
-      Future<void> Function(String noteId, String assetId)? autoEnqueue,
+      Future<void> Function(String noteId, String assetId, String fallbackText)?
+      autoEnqueue,
       bool asrReady = false,
       Object? asrError,
     }) {
@@ -373,7 +375,7 @@ void main() {
         await tester.pumpWidget(
           capture(
             recorder,
-            autoEnqueue: (noteId, assetId) async {
+            autoEnqueue: (noteId, assetId, fallbackText) async {
               enqueued.add((noteId, assetId));
             },
           ),

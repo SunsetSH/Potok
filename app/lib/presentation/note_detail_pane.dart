@@ -1326,21 +1326,23 @@ class _AudioSection extends ConsumerWidget {
   Future<void> _accept(
     BuildContext context,
     WidgetRef ref,
-    String revisionId,
+    TranscriptRevision revision,
   ) async {
     final messenger = ScaffoldMessenger.of(context);
     try {
       final service = await ref.read(notesServiceProvider.future);
-      await service.acceptTranscript(note.id, revisionId);
+      await service.acceptTranscript(note.id, revision.id);
     } on StateError {
       messenger.showSnackBar(
         PotokSnackBar(content: Text('Заметка изменилась — повторите принятие')),
       );
+      return;
     } catch (e) {
       debugPrint('accept transcript failed: ${e.runtimeType}');
       messenger.showSnackBar(
         PotokSnackBar(content: const Text('Не удалось принять расшифровку')),
       );
+      return;
     }
   }
 
@@ -1389,6 +1391,8 @@ class _AudioSection extends ConsumerWidget {
     final revisions =
         ref.watch(revisionsProvider(note.id)).value ??
         const <TranscriptRevision>[];
+    final showProgress =
+        ref.watch(showTranscriptionProgressProvider).value ?? true;
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 8, 8, 8),
       decoration: BoxDecoration(
@@ -1476,7 +1480,8 @@ class _AudioSection extends ConsumerWidget {
           for (final revision in revisions)
             _RevisionTile(
               revision: revision,
-              onAccept: (id) => _accept(context, ref, id),
+              showProgress: showProgress,
+              onAccept: (_) => _accept(context, ref, revision),
               onRetry: (id) => _retry(context, ref, id),
               onDelete: (id) => _deleteRevision(context, ref, id),
               onConfigure: () => showAppearanceDialog(context, ref),
@@ -1653,6 +1658,7 @@ String _durationLabel(Duration duration) {
 
 class _RevisionTile extends StatelessWidget {
   final TranscriptRevision revision;
+  final bool showProgress;
   final Future<void> Function(String revisionId) onAccept;
   final Future<void> Function(String revisionId) onRetry;
   final Future<void> Function(String revisionId) onDelete;
@@ -1660,6 +1666,7 @@ class _RevisionTile extends StatelessWidget {
 
   const _RevisionTile({
     required this.revision,
+    required this.showProgress,
     required this.onAccept,
     required this.onRetry,
     required this.onDelete,
@@ -1732,11 +1739,9 @@ class _RevisionTile extends StatelessWidget {
           ),
         );
       case TranscriptState.recognizing:
+        return _activeStatus(c, 'Идёт расшифровка');
       case TranscriptState.queued:
-        return const Padding(
-          padding: EdgeInsets.only(top: 8),
-          child: LinearProgressIndicator(minHeight: 2),
-        );
+        return _activeStatus(c, 'В очереди на расшифровку');
       case TranscriptState.failed:
         return _statusRow(
           c,
@@ -1768,5 +1773,24 @@ class _RevisionTile extends StatelessWidget {
           ),
         );
     }
+  }
+
+  Widget _activeStatus(PotokColors c, String label) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: TextStyle(fontSize: 11, color: c.muted)),
+          if (showProgress) ...[
+            const SizedBox(height: 4),
+            LinearProgressIndicator(
+              key: ValueKey('transcription-progress-${revision.id}'),
+              minHeight: 3,
+            ),
+          ],
+        ],
+      ),
+    );
   }
 }

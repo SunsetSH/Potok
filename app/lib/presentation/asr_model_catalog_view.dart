@@ -73,7 +73,7 @@ class _AsrModelCatalogViewState extends ConsumerState<AsrModelCatalogView> {
     try {
       await _ensureNotificationPermission();
       final manager = await ref.read(modelManagerProvider.future);
-      final modelId = await manager.downloadAndInstall(
+      await manager.downloadInstallAndActivate(
         entry.manifestUrl,
         onProgress: (progress) {
           if (mounted) setState(() => _downloadProgress = progress);
@@ -84,15 +84,25 @@ class _AsrModelCatalogViewState extends ConsumerState<AsrModelCatalogView> {
           }
         },
       );
-      await manager.activate(modelId);
       final queue = await ref.read(transcriptionQueueProvider.future);
       await queue.kick();
       await _refreshInstalled();
       widget.onModelActivated?.call();
     } on ModelPackException catch (e) {
       if (mounted) setState(() => _error = e.message);
-    } catch (e) {
-      debugPrint('model download failed: ${e.runtimeType}');
+    } catch (e, stackTrace) {
+      // Privacy-safe release diagnostics: retain only Potok source frames.
+      // Exception messages may contain filesystem paths, so never log them.
+      final sourceFrames = stackTrace
+          .toString()
+          .split('\n')
+          .where((line) => line.contains('package:potok/'))
+          .take(4)
+          .join(' | ');
+      debugPrint(
+        'model download failed: ${e.runtimeType}'
+        '${sourceFrames.isEmpty ? '' : ' at $sourceFrames'}',
+      );
       if (mounted) setState(() => _error = 'Не удалось скачать модель');
     } finally {
       if (mounted) setState(() => _downloadingId = null);
@@ -157,6 +167,14 @@ class _AsrModelCatalogViewState extends ConsumerState<AsrModelCatalogView> {
   Widget build(BuildContext context) {
     final c = PotokColors.of(context);
     final active = ref.watch(activeAsrModelProvider).value;
+    final pendingUrl = ref.watch(pendingAsrDownloadUrlProvider).value;
+    final recovery = ref.watch(asrDownloadRecoveryProvider);
+    ref.listen(asrDownloadRecoveryProvider, (_, next) {
+      if (next.hasValue && next.value != null) {
+        unawaited(_refreshInstalled());
+        widget.onModelActivated?.call();
+      }
+    });
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
@@ -169,6 +187,10 @@ class _AsrModelCatalogViewState extends ConsumerState<AsrModelCatalogView> {
               isActive: active?.modelId == entry.id,
               isInstalled: _installedIds.contains(entry.id),
               isBusy: _busyId == entry.id,
+              isRecovering:
+                  pendingUrl == entry.manifestUrl && recovery.isLoading,
+              recoveryFailed:
+                  pendingUrl == entry.manifestUrl && recovery.hasError,
               downloadProgress: _downloadingId == entry.id
                   ? _downloadProgress
                   : null,
@@ -200,6 +222,8 @@ class _CatalogModelTile extends StatelessWidget {
   final bool isActive;
   final bool isInstalled;
   final bool isBusy;
+  final bool isRecovering;
+  final bool recoveryFailed;
 
   /// non-null, когда именно эта модель сейчас скачивается (0..1).
   final double? downloadProgress;
@@ -213,6 +237,8 @@ class _CatalogModelTile extends StatelessWidget {
     required this.isActive,
     required this.isInstalled,
     required this.isBusy,
+    required this.isRecovering,
+    required this.recoveryFailed,
     required this.downloadProgress,
     required this.downloadBytesPerSecond,
     required this.onDownload,
@@ -233,7 +259,7 @@ class _CatalogModelTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = PotokColors.of(context);
-    final downloading = downloadProgress != null;
+    final downloading = downloadProgress != null || isRecovering;
     return Container(
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
@@ -285,7 +311,7 @@ class _CatalogModelTile extends StatelessWidget {
                 ClipRRect(
                   borderRadius: BorderRadius.circular(999),
                   child: LinearProgressIndicator(
-                    value: downloadProgress,
+                    value: isRecovering ? null : downloadProgress,
                     minHeight: 6,
                     backgroundColor: c.line,
                     valueColor: AlwaysStoppedAnimation(c.accent),
@@ -295,7 +321,9 @@ class _CatalogModelTile extends StatelessWidget {
                 Row(
                   children: [
                     Text(
-                      '${(downloadProgress! * 100).toStringAsFixed(0)}%',
+                      isRecovering
+                          ? 'Восстановление фоновой загрузки…'
+                          : '${(downloadProgress! * 100).toStringAsFixed(0)}%',
                       style: TextStyle(fontSize: 10, color: c.muted),
                     ),
                     if (downloadBytesPerSecond > 0) ...[
@@ -310,43 +338,62 @@ class _CatalogModelTile extends StatelessWidget {
               ],
             )
           else
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                if (!isInstalled)
-                  TextButton.icon(
-                    onPressed: entry.isDownloadable && !isBusy
-                        ? onDownload
-                        : null,
-                    icon: const Icon(Icons.download_rounded, size: 16),
-                    label: Text(entry.isDownloadable ? 'Скачать' : 'Скоро'),
-                  )
-                else ...[
-                  IconButton(
-                    tooltip: 'Удалить модель',
-                    onPressed: isBusy ? null : onDelete,
-                    icon: Icon(
-                      Icons.delete_outline_rounded,
-                      size: 18,
-                      color: c.danger,
+                if (recoveryFailed)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 2),
+                    child: Text(
+                      'Фоновая загрузка не завершена',
+                      style: TextStyle(fontSize: 10, color: c.danger),
                     ),
                   ),
-                  const SizedBox(width: 4),
-                  if (isActive)
-                    Text(
-                      'Активна',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        color: c.accent,
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    if (!isInstalled)
+                      TextButton.icon(
+                        onPressed: entry.isDownloadable && !isBusy
+                            ? onDownload
+                            : null,
+                        icon: const Icon(Icons.download_rounded, size: 16),
+                        label: Text(
+                          entry.isDownloadable
+                              ? recoveryFailed
+                                    ? 'Повторить'
+                                    : 'Скачать'
+                              : 'Скоро',
+                        ),
+                      )
+                    else ...[
+                      IconButton(
+                        tooltip: 'Удалить модель',
+                        onPressed: isBusy ? null : onDelete,
+                        icon: Icon(
+                          Icons.delete_outline_rounded,
+                          size: 18,
+                          color: c.danger,
+                        ),
                       ),
-                    )
-                  else
-                    TextButton(
-                      onPressed: isBusy ? null : onActivate,
-                      child: const Text('Активировать'),
-                    ),
-                ],
+                      const SizedBox(width: 4),
+                      if (isActive)
+                        Text(
+                          'Активна',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            color: c.accent,
+                          ),
+                        )
+                      else
+                        TextButton(
+                          onPressed: isBusy ? null : onActivate,
+                          child: const Text('Активировать'),
+                        ),
+                    ],
+                  ],
+                ),
               ],
             ),
         ],

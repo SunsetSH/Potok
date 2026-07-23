@@ -20,6 +20,7 @@ import '../application/smart_views_service.dart';
 import '../application/storage_usage_service.dart';
 import '../application/tags_service.dart';
 import '../application/transcription_queue.dart';
+import '../application/voice_classification_coordinator.dart';
 import '../domain/clock.dart';
 import '../domain/id_generator.dart';
 import '../domain/types.dart';
@@ -95,11 +96,35 @@ final modelManagerProvider = FutureProvider<AsrModelManager>((ref) async {
     modelsRoot: root,
     settings: ref.watch(settingsServiceProvider),
     devFallbackDir: Platform.environment['POTOK_ASR_MODEL_DIR'],
-    // ADR-013: нативный фоновый трансфер вместо HttpClient в UI-изоляте —
-    // переживает сворачивание приложения и блокировку экрана на Android.
-    fileDownloader: BackgroundModelFileDownloader(),
+    // На мобильных — нативный фоновый трансфер (ADR-013): переживает
+    // сворачивание приложения и блокировку экрана. На desktop процесс не
+    // приостанавливается при сворачивании, поэтому там простой HttpClient
+    // надёжнее и без зависимости от нативного плагина фоновой загрузки.
+    fileDownloader: (Platform.isAndroid || Platform.isIOS)
+        ? BackgroundModelFileDownloader()
+        : HttpClientModelFileDownloader(),
   );
   return manager;
+});
+
+final pendingAsrDownloadUrlProvider = StreamProvider<String?>((ref) {
+  return ref
+      .watch(settingsServiceProvider)
+      .watch(AsrModelManager.pendingDownloadUrlKey)
+      .map((value) => value == null || value.isEmpty ? null : value);
+});
+
+/// Completes a model operation whose native transfers outlived the previous
+/// Android UI process. The persisted URL represents an explicit user action;
+/// this does not introduce automatic or hidden network inference.
+final asrDownloadRecoveryProvider = FutureProvider<String?>((ref) async {
+  final manager = await ref.watch(modelManagerProvider.future);
+  final modelId = await manager.recoverPendingDownload();
+  if (modelId != null) {
+    ref.invalidate(activeAsrModelDirectoryProvider);
+    ref.invalidate(activeAsrModelProvider);
+  }
+  return modelId;
 });
 
 final activeAsrModelDirectoryProvider = FutureProvider<String?>((ref) async {
@@ -126,7 +151,13 @@ final transcriptionQueueProvider = FutureProvider<TranscriptionQueue>((
     ids: ref.watch(idGeneratorProvider),
     onTranscriptReady: (noteId, text) async {
       final notes = await ref.read(notesServiceProvider.future);
-      await notes.suggestTitleFromTranscript(noteId, text);
+      try {
+        await notes.suggestTitleFromTranscript(noteId, text);
+      } catch (_) {
+        // Title generation is optional and must not suppress classification
+        // when the note revision changed while ASR was running.
+      }
+      await ref.read(processVoiceClassificationProvider)(noteId, text);
     },
   );
   await queue.recoverOnStartup();
@@ -136,14 +167,16 @@ final transcriptionQueueProvider = FutureProvider<TranscriptionQueue>((
 /// FR-AUD-005: after a ready audio publish, enqueue local ASR only when the
 /// user has an active model. The audio commit never depends on this follow-up.
 final automaticTranscriptionEnqueueProvider =
-    Provider<Future<void> Function(String noteId, String assetId)>((ref) {
-      return (noteId, assetId) async {
+    Provider<
+      Future<void> Function(String noteId, String assetId, String fallbackText)
+    >((ref) {
+      return (noteId, assetId, fallbackText) async {
         final activeModelId = await ref
             .read(settingsServiceProvider)
             .get(AsrModelManager.activeModelKey);
         if (activeModelId == null || activeModelId.isEmpty) return;
         final queue = await ref.read(transcriptionQueueProvider.future);
-        await queue.enqueue(noteId, assetId);
+        await queue.enqueue(noteId, assetId, fallbackText: fallbackText);
       };
     });
 
@@ -204,6 +237,55 @@ final tagsServiceProvider = FutureProvider<TagsService>((ref) async {
   await service.seedPresetsIfEmpty();
   return service;
 });
+
+final voiceClassificationCoordinatorProvider =
+    FutureProvider<VoiceClassificationCoordinator>((ref) async {
+      return VoiceClassificationCoordinator(
+        settings: ref.watch(settingsServiceProvider),
+        notes: await ref.watch(notesServiceProvider.future),
+        projects: await ref.watch(projectsServiceProvider.future),
+        tags: await ref.watch(tagsServiceProvider.future),
+      );
+    });
+
+class VoiceClassificationEventsNotifier
+    extends Notifier<List<VoiceClassificationResult>> {
+  @override
+  List<VoiceClassificationResult> build() => const [];
+
+  void add(VoiceClassificationResult event) {
+    state = [...state, event];
+  }
+
+  VoiceClassificationResult? takeFirst() {
+    if (state.isEmpty) return null;
+    final first = state.first;
+    state = state.sublist(1);
+    return first;
+  }
+}
+
+final voiceClassificationEventsProvider =
+    NotifierProvider<
+      VoiceClassificationEventsNotifier,
+      List<VoiceClassificationResult>
+    >(VoiceClassificationEventsNotifier.new);
+
+/// Shared entry point for durable full-file ASR and the best-effort live
+/// preview. The coordinator deduplicates equal suggestions from both sources.
+final processVoiceClassificationProvider =
+    Provider<Future<void> Function(String noteId, String text)>((ref) {
+      return (noteId, text) async {
+        if (text.trim().isEmpty) return;
+        final coordinator = await ref.read(
+          voiceClassificationCoordinatorProvider.future,
+        );
+        final result = await coordinator.processTranscript(noteId, text);
+        if (result != null) {
+          ref.read(voiceClassificationEventsProvider.notifier).add(result);
+        }
+      };
+    });
 
 final imagesServiceProvider = FutureProvider<ImagesService>((ref) async {
   return ImagesService(
@@ -284,6 +366,15 @@ final audioMaxMinutesProvider = StreamProvider<int>((ref) {
       });
 });
 
+final voiceClassificationModeProvider = StreamProvider<VoiceClassificationMode>(
+  (ref) {
+    return ref
+        .watch(settingsServiceProvider)
+        .watch(SettingsService.voiceClassificationModeKey)
+        .map(VoiceClassificationMode.fromStorage);
+  },
+);
+
 final storageUsageProvider = FutureProvider.autoDispose<StorageUsage>((
   ref,
 ) async {
@@ -327,6 +418,42 @@ final themeIdProvider = StreamProvider<PotokThemeId>((ref) {
       .watch(settingsServiceProvider)
       .watch(SettingsService.themeKey)
       .map(PotokThemeId.fromStorage);
+});
+
+final potokThemeModeProvider = StreamProvider<PotokThemeMode>((ref) {
+  return ref
+      .watch(settingsServiceProvider)
+      .watch(SettingsService.themeModeKey)
+      .map(PotokThemeMode.fromStorage);
+});
+
+final systemLightThemeProvider = StreamProvider<PotokThemeId>((ref) {
+  return ref
+      .watch(settingsServiceProvider)
+      .watch(SettingsService.systemLightThemeKey)
+      .map(
+        (value) => value == null
+            ? PotokThemeId.studio
+            : PotokThemeId.fromStorage(value),
+      );
+});
+
+final systemDarkThemeProvider = StreamProvider<PotokThemeId>((ref) {
+  return ref
+      .watch(settingsServiceProvider)
+      .watch(SettingsService.systemDarkThemeKey)
+      .map(
+        (value) => value == null
+            ? PotokThemeId.studioNight
+            : PotokThemeId.fromStorage(value),
+      );
+});
+
+final showTranscriptionProgressProvider = StreamProvider<bool>((ref) {
+  return ref
+      .watch(settingsServiceProvider)
+      .watch(SettingsService.showTranscriptionProgressKey)
+      .map((value) => value != '0');
 });
 
 // ---------- Глобальные объекты UI ----------

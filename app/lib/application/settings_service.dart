@@ -1,11 +1,40 @@
 import '../infrastructure/db/database.dart';
 
+/// Режим голосовой классификации: как поступать с распознанными в речи
+/// командами «поставь тег…»/«в проект…» после принятия расшифровки.
+enum VoiceClassificationMode {
+  /// Не разбирать команды вовсе (значение по умолчанию — фича opt-in).
+  off,
+
+  /// Применять совпавшие теги/проект сразу, без вопросов.
+  auto,
+
+  /// Показать найденное и применить только после подтверждения.
+  confirm;
+
+  String get storageValue => name;
+
+  static VoiceClassificationMode fromStorage(String? value) {
+    return VoiceClassificationMode.values.firstWhere(
+      (mode) => mode.name == value,
+      orElse: () => VoiceClassificationMode.off,
+    );
+  }
+}
+
 /// Локальные настройки приложения в app_meta (ключ → строка).
 /// Не синхронизируются между устройствами (ТЗ 0.10.1).
 class SettingsService {
   static const themeKey = 'theme';
+  static const themeModeKey = 'theme_mode';
+  static const systemLightThemeKey = 'theme_system_light';
+  static const systemDarkThemeKey = 'theme_system_dark';
+  static const showTranscriptionProgressKey = 'show_transcription_progress';
   static const audioBitRateKey = 'audio_bit_rate';
   static const audioMaxMinutesKey = 'audio_max_minutes';
+
+  /// Режим голосовой классификации (см. [VoiceClassificationMode]).
+  static const voiceClassificationModeKey = 'voice_classification_mode';
 
   /// Windows capture device ID reported by `record`; missing/empty means the
   /// current system default. The value is local to this installation.

@@ -129,17 +129,28 @@ class ModelManifest {
 class AsrModelManager implements ActiveModelLocator {
   static const manifestFileName = 'potok-model.json';
   static const activeModelKey = 'asr.active_model';
+  static const pendingDownloadUrlKey = 'asr.pending_download_url';
   static const _partialSuffix = '.partial';
   static const _backupSuffix = '.old';
+  static const _downloadStagingDirectory = '.downloads';
+  static const _downloadSourceFile = '.source-url';
 
   /// Мьютекс по model_id: конкурентные установки одного пака сериализуются,
   /// иначе они делят один `<id>.partial` и рушат rename друг друга.
   final Map<String, Future<void>> _installLocks = {};
+  final Map<String, Future<void>> _downloadLocks = {};
 
   Future<T> _withInstallLock<T>(String modelId, Future<T> Function() action) {
     final previous = _installLocks[modelId] ?? Future<void>.value();
     final result = previous.then((_) => action());
     _installLocks[modelId] = result.then((_) {}, onError: (_) {});
+    return result;
+  }
+
+  Future<T> _withDownloadLock<T>(String modelId, Future<T> Function() action) {
+    final previous = _downloadLocks[modelId] ?? Future<void>.value();
+    final result = previous.then((_) => action());
+    _downloadLocks[modelId] = result.then((_) {}, onError: (_) {});
     return result;
   }
 
@@ -543,91 +554,159 @@ class AsrModelManager implements ActiveModelLocator {
   }) async {
     final manifestUri = Uri.parse(manifestUrl);
     final client = HttpClient();
-    final tempRoot = await Directory.systemTemp.createTemp('potok-asr-dl-');
     try {
-      final manifestResponse = await _openAllowlisted(client, manifestUri);
-      final manifestText = await utf8.decodeStream(manifestResponse);
+      final response = await _openAllowlisted(client, manifestUri);
+      final manifestText = await utf8.decodeStream(response);
       final manifest = ModelManifest.parse(manifestText);
       _validateCompatibility(manifest);
-      await File(
-        p.join(tempRoot.path, manifestFileName),
-      ).writeAsString(manifestText);
-
-      final totalBytes = manifest.sizeBytes > 0 ? manifest.sizeBytes : 1;
-      onProgress?.call(0.0);
-      var completedBytes = 0;
-      var filesLeft = manifest.files.length;
-      for (final fileName in manifest.files.keys) {
-        final fileUri = manifestUri.resolve(fileName);
-        // Финальный URL резолвится и провалидируется хоп за хопом здесь;
-        // fileDownloader (в проде — нативный код вне нашего контроля)
-        // редиректы больше не проверяет.
-        final resolvedUri = await _resolveAllowlisted(client, fileUri);
-        // Пока файл не докачан, его доля бюджета — остаток манифеста
-        // поровну на оставшиеся файлы; после каждого файла бюджет
-        // пересчитывается по фактическому размеру на диске. Точных
-        // размеров отдельных файлов манифест не хранит (encoder и
-        // tokens.txt отличаются на порядки), поэтому оценка "поровну"
-        // самоисправляется по ходу дела, а не остаётся грубой до конца.
-        final remainingBudget = totalBytes - completedBytes;
-        final assumedFileSize = filesLeft > 0
-            ? (remainingBudget / filesLeft).clamp(1, totalBytes).round()
-            : totalBytes;
-        final fileCompletedBytes = completedBytes;
-        await fileDownloader.download(
-          resolvedUri,
-          p.join(tempRoot.path, fileName),
-          onProgress: (fraction, bytesPerSecond) {
-            onProgress?.call(
-              ((fileCompletedBytes + fraction * assumedFileSize) /
-                      totalBytes)
-                  .clamp(0.0, 1.0),
-            );
-            if (bytesPerSecond > 0) onSpeed?.call(bytesPerSecond);
-          },
+      return _withDownloadLock(manifest.modelId, () async {
+        final stagingRoot = Directory(
+          p.join(modelsRoot.path, _downloadStagingDirectory, manifest.modelId),
         );
-        completedBytes +=
-            await File(p.join(tempRoot.path, fileName)).length();
-        filesLeft--;
-      }
-      onProgress?.call(1.0);
-      return await _installFiles(tempRoot, manifest);
+        await stagingRoot.create(recursive: true);
+        await File(
+          p.join(stagingRoot.path, manifestFileName),
+        ).writeAsString(manifestText, flush: true);
+        await File(
+          p.join(stagingRoot.path, _downloadSourceFile),
+        ).writeAsString(manifestUrl, flush: true);
+
+        final progressByFile = <String, double>{};
+        final speedByFile = <String, int>{};
+        final pendingFiles = <String>[];
+        for (final entry in manifest.files.entries) {
+          final stagedFile = File(p.join(stagingRoot.path, entry.key));
+          if (stagedFile.existsSync() &&
+              await _sha256Hex(stagedFile) == entry.value) {
+            progressByFile[entry.key] = 1;
+          } else {
+            if (stagedFile.existsSync()) stagedFile.deleteSync();
+            progressByFile[entry.key] = 0;
+            pendingFiles.add(entry.key);
+          }
+        }
+
+        void reportProgress() {
+          final completed = progressByFile.values.fold<double>(
+            0,
+            (sum, value) => sum + value,
+          );
+          onProgress?.call((completed / manifest.files.length).clamp(0.0, 1.0));
+          onSpeed?.call(
+            speedByFile.values.fold<int>(0, (sum, value) => sum + value),
+          );
+        }
+
+        reportProgress();
+        // Queue the whole pack before awaiting any individual file. Android's
+        // WorkManager can then complete all transfers after the UI process is
+        // evicted, not just the first file from a sequential Dart loop.
+        await Future.wait(
+          pendingFiles.map((fileName) async {
+            final fileUri = manifestUri.resolve(fileName);
+            _assertAllowedHost(fileUri);
+            await fileDownloader.download(
+              fileUri,
+              p.join(stagingRoot.path, fileName),
+              taskId: '${manifest.modelId}::$fileName',
+              onProgress: (fraction, bytesPerSecond) {
+                progressByFile[fileName] = fraction.clamp(0.0, 1.0);
+                speedByFile[fileName] = bytesPerSecond;
+                reportProgress();
+              },
+            );
+            progressByFile[fileName] = 1;
+            speedByFile.remove(fileName);
+            reportProgress();
+          }),
+        );
+
+        final modelId = await _installFiles(stagingRoot, manifest);
+        if (stagingRoot.existsSync()) {
+          stagingRoot.deleteSync(recursive: true);
+        }
+        final stagingParent = stagingRoot.parent;
+        if (stagingParent.existsSync() && stagingParent.listSync().isEmpty) {
+          stagingParent.deleteSync();
+        }
+        return modelId;
+      });
     } finally {
       client.close(force: true);
-      if (tempRoot.existsSync()) await tempRoot.delete(recursive: true);
     }
   }
 
-  /// Как [_openAllowlisted], но HEAD без тела: только резолвит редиректы и
-  /// возвращает провалидированный финальный URL, который дальше скачивает
-  /// [fileDownloader] (в проде — нативный код, не проверяющий allowlist сам).
-  Future<Uri> _resolveAllowlisted(
-    HttpClient client,
-    Uri uri, {
-    int redirectsLeft = 5,
+  /// Records the user's explicit network action before starting it. Recovery
+  /// can therefore finish validation, installation and activation after an
+  /// Android process restart without introducing an implicit network fallback.
+  Future<String> downloadInstallAndActivate(
+    String manifestUrl, {
+    void Function(double progress)? onProgress,
+    void Function(int bytesPerSecond)? onSpeed,
   }) async {
-    _assertAllowedHost(uri);
-    final request = await client.headUrl(uri);
-    request.followRedirects = false;
-    final response = await request.close();
-    await response.drain<void>();
-    if (response.isRedirect && redirectsLeft > 0) {
-      final location = response.headers.value(HttpHeaders.locationHeader);
-      if (location == null) {
-        throw ModelPackException('редирект без Location: $uri');
+    await settings.set(pendingDownloadUrlKey, manifestUrl);
+    final modelId = await downloadAndInstall(
+      manifestUrl,
+      onProgress: onProgress,
+      onSpeed: onSpeed,
+    );
+    await activate(modelId);
+    await settings.remove(pendingDownloadUrlKey);
+    return modelId;
+  }
+
+  Future<String?> recoverPendingDownload({
+    void Function(double progress)? onProgress,
+    void Function(int bytesPerSecond)? onSpeed,
+  }) async {
+    final manifestUrl = await settings.get(pendingDownloadUrlKey);
+    if (manifestUrl == null || manifestUrl.isEmpty) return null;
+    final completedModelId = await _installCompletedStaging(manifestUrl);
+    if (completedModelId != null) {
+      await activate(completedModelId);
+      await settings.remove(pendingDownloadUrlKey);
+      return completedModelId;
+    }
+    return downloadInstallAndActivate(
+      manifestUrl,
+      onProgress: onProgress,
+      onSpeed: onSpeed,
+    );
+  }
+
+  Future<String?> _installCompletedStaging(String manifestUrl) async {
+    final stagingParent = Directory(
+      p.join(modelsRoot.path, _downloadStagingDirectory),
+    );
+    if (!stagingParent.existsSync()) return null;
+    for (final entity in stagingParent.listSync()) {
+      if (entity is! Directory) continue;
+      final sourceFile = File(p.join(entity.path, _downloadSourceFile));
+      final manifestFile = File(p.join(entity.path, manifestFileName));
+      if (!sourceFile.existsSync() || !manifestFile.existsSync()) continue;
+      if (await sourceFile.readAsString() != manifestUrl) continue;
+      final ModelManifest manifest;
+      try {
+        manifest = ModelManifest.parse(await manifestFile.readAsString());
+        _validateCompatibility(manifest);
+      } on ModelPackException {
+        return null;
       }
-      return _resolveAllowlisted(
-        client,
-        uri.resolve(location),
-        redirectsLeft: redirectsLeft - 1,
-      );
+      if (p.basename(entity.path) != manifest.modelId) return null;
+      for (final entry in manifest.files.entries) {
+        final file = File(p.join(entity.path, entry.key));
+        if (!file.existsSync() || await _sha256Hex(file) != entry.value) {
+          return null;
+        }
+      }
+      final modelId = await _installFiles(entity, manifest);
+      if (entity.existsSync()) entity.deleteSync(recursive: true);
+      if (stagingParent.existsSync() && stagingParent.listSync().isEmpty) {
+        stagingParent.deleteSync();
+      }
+      return modelId;
     }
-    if (response.statusCode != 200) {
-      throw ModelPackException(
-        'не удалось скачать $uri (HTTP ${response.statusCode})',
-      );
-    }
-    return uri;
+    return null;
   }
 
   Future<ModelManifest?> _readInstalledManifest(String dirName) async {

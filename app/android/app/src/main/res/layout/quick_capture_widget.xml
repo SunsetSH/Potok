@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@drawable/widget_background"
@@ -19,12 +20,14 @@
         android:orientation="horizontal">
 
         <ImageView
+            android:id="@+id/widget_text_icon"
             android:layout_width="18dp"
             android:layout_height="18dp"
             android:contentDescription="@null"
             android:src="@drawable/widget_note_icon" />
 
         <TextView
+            android:id="@+id/widget_text_label"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginStart="3dp"
@@ -47,12 +50,14 @@
         android:orientation="horizontal">
 
         <ImageView
+            android:id="@+id/widget_audio_icon"
             android:layout_width="18dp"
             android:layout_height="18dp"
             android:contentDescription="@null"
             android:src="@drawable/widget_mic_icon" />
 
         <TextView
+            android:id="@+id/widget_audio_label"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginStart="3dp"

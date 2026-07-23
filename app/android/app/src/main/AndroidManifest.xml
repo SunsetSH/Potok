@@ -4,18 +4,21 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+    <!-- background_downloader: все файлы ASR-пака качаются в foreground-
+         сервисе (Config.runInForeground = always), чтобы не отменяться при
+         сворачивании/скринлоке. Требуется на Android 14+. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
     <!-- ADR-007: единственное сетевое использование во всём приложении —
          скачивание ASR-моделей по явному действию пользователя (allowlisted-
          клиент, только github.com/*.githubusercontent.com). Расшифровка речи
          и вся остальная работа приложения — полностью офлайн; это разрешение
          не используется больше нигде. -->
     <uses-permission android:name="android.permission.INTERNET"/>
-    <!-- Media3 declares this for network streams, but Potok only opens managed
-         local files and has no network playback path. Keep release capability
-         aligned with the offline-only privacy contract. -->
-    <uses-permission
-        android:name="android.permission.ACCESS_NETWORK_STATE"
-        tools:node="remove" />
+    <!-- WorkManager/background_downloader requires this normal permission to
+         schedule jobs with a connectivity constraint. It exposes only network
+         state; model bytes are still fetched solely by the allowlisted ASR
+         downloader and inference remains fully offline. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <application
         android:label="@string/app_name"
         android:name="${applicationName}"
@@ -60,10 +63,57 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/quick_capture_widget_info" />
         </receiver>
+        <!-- Виджет: последняя добавленная заметка. -->
+        <receiver
+            android:name=".RecentNoteWidgetProvider"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/recent_note_widget_info" />
+        </receiver>
+        <!-- Виджет: прокручиваемый список последних заметок. -->
+        <receiver
+            android:name=".NoteListWidgetProvider"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/note_list_widget_info" />
+        </receiver>
+        <!-- Виджет: выбранная заметка или последняя в проекте (с настройкой). -->
+        <receiver
+            android:name=".SelectableNoteWidgetProvider"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/selectable_note_widget_info" />
+        </receiver>
+        <activity
+            android:name=".SelectableNoteConfigActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.DeviceDefault.Light">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
         <service
             android:name=".RecordingForegroundService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
+        <!-- background_downloader использует WorkManager foreground-сервис для
+             долгих загрузок; тип dataSync требуется на Android 14+. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

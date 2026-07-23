@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:collection';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:potok/presentation/android_launch_intents.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   test('launch request parser allowlists kinds and bounds shared text', () {
     expect(AndroidLaunchRequest.tryParse({'kind': 'unknown'}), isNull);
     expect(
@@ -58,6 +61,61 @@ void main() {
     expect(presented.last, AndroidLaunchKind.share);
     integration.dispose();
   });
+
+  test('widget data uses the launch-intents native channel', () async {
+    const channel = MethodChannel(
+      MethodChannelAndroidLaunchIntentPort.channelName,
+    );
+    MethodCall? received;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          received = call;
+          return null;
+        });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null),
+    );
+
+    await MethodChannelAndroidLaunchIntentPort().updateWidgetData(
+      notesJson: '[{"id":"n1"}]',
+      projectsJson: '[]',
+    );
+
+    expect(received?.method, 'setWidgetData');
+    expect(received?.arguments, {'notes': '[{"id":"n1"}]', 'projects': '[]'});
+  });
+
+  test('widget theme uses the launch-intents native channel', () async {
+    const channel = MethodChannel(
+      MethodChannelAndroidLaunchIntentPort.channelName,
+    );
+    MethodCall? received;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          received = call;
+          return null;
+        });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null),
+    );
+
+    await MethodChannelAndroidLaunchIntentPort().updateWidgetTheme(
+      mode: 'system',
+      fixedTheme: 'paper',
+      lightTheme: 'studio',
+      darkTheme: 'terminal',
+    );
+
+    expect(received?.method, 'setWidgetTheme');
+    expect(received?.arguments, {
+      'mode': 'system',
+      'fixed': 'paper',
+      'light': 'studio',
+      'dark': 'terminal',
+    });
+  });
 }
 
 class _FakeLaunchPort implements AndroidLaunchIntentPort {
@@ -73,6 +131,20 @@ class _FakeLaunchPort implements AndroidLaunchIntentPort {
 
   @override
   Future<void> updateWidgetProject({String? id, String? name}) async {}
+
+  @override
+  Future<void> updateWidgetData({
+    required String notesJson,
+    required String projectsJson,
+  }) async {}
+
+  @override
+  Future<void> updateWidgetTheme({
+    required String mode,
+    required String fixedTheme,
+    required String lightTheme,
+    required String darkTheme,
+  }) async {}
 
   @override
   void setOnAvailable(Future<void> Function()? callback) {

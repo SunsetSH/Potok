@@ -55,6 +55,7 @@ class TranscriptionQueue {
     String noteId,
     String assetId, {
     String language = '',
+    String fallbackText = '',
   }) async {
     final revisionId = ids.newId();
     await db.transaction(() async {
@@ -68,6 +69,7 @@ class TranscriptionQueue {
               engineId: engineId,
               modelId: '',
               language: language,
+              rawText: Value(fallbackText.trim()),
               state: TranscriptState.queued,
               createdAtUtc: clock.nowUtcMillis(),
             ),
@@ -91,6 +93,7 @@ class TranscriptionQueue {
       revision.noteId,
       revision.audioAssetId,
       language: revision.language,
+      fallbackText: revision.rawText,
     );
   }
 
@@ -215,6 +218,9 @@ class TranscriptionQueue {
         media.absolutePath(asset.relativePath),
         languageHint: revision.language,
       );
+      final finalText = result.text.trim().isEmpty
+          ? revision.rawText.trim()
+          : result.text;
       // Stale-guard: ready пишется только поверх recognizing — результат
       // отменённой job не перезаписывает cancelled.
       final changed =
@@ -225,16 +231,16 @@ class TranscriptionQueue {
               ))
               .write(
                 TranscriptRevisionsCompanion(
-                  rawText: Value(result.text),
+                  rawText: Value(finalText),
                   modelId: Value(result.modelId),
                   language: Value(result.language),
                   state: const Value(TranscriptState.ready),
                   errorMessage: const Value(null),
                 ),
               );
-      if (changed > 0 && result.text.trim().isNotEmpty) {
+      if (changed > 0 && finalText.trim().isNotEmpty) {
         try {
-          await onTranscriptReady?.call(revision.noteId, result.text);
+          await onTranscriptReady?.call(revision.noteId, finalText);
         } catch (_) {
           // Ревизия уже ready: сбой колбэка (например, гонка ревизий заметки)
           // не должен ни валить job, ни останавливать очередь.

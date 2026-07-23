@@ -7,6 +7,7 @@ import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:potok/application/settings_service.dart';
+import 'package:potok/infrastructure/asr/model_file_downloader.dart';
 import 'package:potok/infrastructure/asr/model_manager.dart';
 import 'package:potok/infrastructure/db/database.dart';
 
@@ -502,6 +503,25 @@ void main() {
       expect(progressValues.last, 1.0);
     });
 
+    test('passes a stable model-and-file task id to every download', () async {
+      final downloader = _RecordingModelFileDownloader(filePayloads);
+      manager = AsrModelManager(
+        modelsRoot: modelsRoot,
+        settings: settings,
+        allowedDownloadHosts: {server.address.address},
+        fileDownloader: downloader,
+      );
+
+      await manager.downloadAndInstall('$baseUrl/potok-model.json');
+
+      expect(
+        downloader.taskIds,
+        filePayloads.keys
+            .map((name) => 'downloaded-model::$name')
+            .toList(growable: false),
+      );
+    });
+
     test('rejects a manifest URL on a host outside the allowlist', () async {
       final other = AsrModelManager(modelsRoot: modelsRoot, settings: settings);
       await expectLater(
@@ -519,6 +539,48 @@ void main() {
         throwsA(isA<ModelPackException>()),
       );
     });
+
+    test(
+      'a restarted process installs completed native tasks and clears intent',
+      () async {
+        final interruptedDownloader = _CompletingThenFailingDownloader(
+          filePayloads,
+        );
+        manager = AsrModelManager(
+          modelsRoot: modelsRoot,
+          settings: settings,
+          allowedDownloadHosts: {server.address.address},
+          fileDownloader: interruptedDownloader,
+        );
+
+        await expectLater(
+          manager.downloadInstallAndActivate('$baseUrl/potok-model.json'),
+          throwsA(isA<StateError>()),
+        );
+        expect(
+          await settings.get(AsrModelManager.pendingDownloadUrlKey),
+          '$baseUrl/potok-model.json',
+        );
+        await server.close(force: true);
+
+        final resumedDownloader = _RecordingModelFileDownloader(filePayloads);
+        final restartedManager = AsrModelManager(
+          modelsRoot: modelsRoot,
+          settings: settings,
+          allowedDownloadHosts: {Uri.parse(baseUrl).host},
+          fileDownloader: resumedDownloader,
+        );
+        final recoveredId = await restartedManager.recoverPendingDownload();
+
+        expect(recoveredId, 'downloaded-model');
+        expect(resumedDownloader.taskIds, isEmpty);
+        expect(await restartedManager.activeModelDir(), isNotNull);
+        expect(
+          await settings.get(AsrModelManager.pendingDownloadUrlKey),
+          isNull,
+        );
+      },
+    );
   });
 
   group('dev fallback (POTOK_ASR_MODEL_DIR)', () {
@@ -544,4 +606,50 @@ void main() {
       expect(await manager.activeModelDir(), isNull);
     });
   });
+}
+
+class _RecordingModelFileDownloader implements ModelFileDownloader {
+  final Map<String, String> payloads;
+  final List<String> taskIds = [];
+
+  _RecordingModelFileDownloader(this.payloads);
+
+  @override
+  Future<void> download(
+    Uri url,
+    String destinationPath, {
+    required String taskId,
+    void Function(double progress, int bytesPerSecond)? onProgress,
+  }) async {
+    final name = url.pathSegments.last;
+    final payload = payloads[name];
+    if (payload == null) throw StateError('unexpected model file');
+    taskIds.add(taskId);
+    await File(destinationPath).writeAsString(payload);
+    onProgress?.call(1, utf8.encode(payload).length);
+  }
+}
+
+class _CompletingThenFailingDownloader implements ModelFileDownloader {
+  final Map<String, String> payloads;
+  bool _hasFailed = false;
+
+  _CompletingThenFailingDownloader(this.payloads);
+
+  @override
+  Future<void> download(
+    Uri url,
+    String destinationPath, {
+    required String taskId,
+    void Function(double progress, int bytesPerSecond)? onProgress,
+  }) async {
+    final payload = payloads[url.pathSegments.last];
+    if (payload == null) throw StateError('unexpected model file');
+    await File(destinationPath).writeAsString(payload, flush: true);
+    onProgress?.call(1, utf8.encode(payload).length);
+    if (!_hasFailed) {
+      _hasFailed = true;
+      throw StateError('simulated Dart process interruption');
+    }
+  }
 }

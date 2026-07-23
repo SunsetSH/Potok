@@ -54,6 +54,16 @@ class NotesService {
     );
   }
 
+  /// Последние живые заметки, новейшие сверху — для кэша Android-виджетов.
+  /// Виджет никогда не открывает БД сам; Flutter пушит ему компактный срез.
+  Stream<List<Note>> watchRecentNotes({int limit = 30}) {
+    final query = _createNotesQuery()..limit(limit);
+    return query.watch().map(
+      (rows) =>
+          rows.map((row) => row.readTable(db.notes)).toList(growable: false),
+    );
+  }
+
   Future<NoteListPage> fetchNotesPage({
     String? projectId,
     bool onlyNoProject = false,

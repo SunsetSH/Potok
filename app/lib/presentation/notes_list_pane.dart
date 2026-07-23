@@ -341,7 +341,7 @@ class _NotesListPaneState extends ConsumerState<NotesListPane> {
                   height: isTrash ? 48 : 84,
                   child: isTrash
                       ? (selectedIds.isEmpty
-                            ? const SizedBox.shrink()
+                            ? const _ClearTrashButton()
                             : _TrashBulkBar(selectedCount: selectedIds.length))
                       : (selectedIds.isEmpty
                             ? Column(
@@ -901,23 +901,45 @@ class _NoteCard extends ConsumerWidget {
                         ),
                       ),
                       const SizedBox(width: 4),
-                      OutlinedButton.icon(
-                        key: ValueKey('move-note-${note.id}'),
-                        onPressed: onMove,
-                        icon: const Icon(
-                          Icons.drive_file_move_outline,
-                          size: 15,
-                        ),
-                        label: const Text('В проект'),
-                        style: OutlinedButton.styleFrom(
-                          visualDensity: VisualDensity.compact,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 7,
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 150),
+                        child: OutlinedButton.icon(
+                          key: ValueKey('move-note-${note.id}'),
+                          onPressed: onMove,
+                          icon: const Icon(
+                            Icons.drive_file_move_outline,
+                            size: 15,
                           ),
-                          textStyle: const TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700,
+                          label: Text(
+                            project?.name ?? 'В проект',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: project == null
+                                ? null
+                                : Color(project.colorArgb),
+                            backgroundColor: project == null
+                                ? null
+                                : Color(
+                                    project.colorArgb,
+                                  ).withValues(alpha: 0.08),
+                            side: project == null
+                                ? null
+                                : BorderSide(
+                                    color: Color(
+                                      project.colorArgb,
+                                    ).withValues(alpha: 0.55),
+                                  ),
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 7,
+                            ),
+                            textStyle: const TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
                         ),
                       ),
@@ -1529,6 +1551,78 @@ String _shortDate(int utcMillis) {
 /// Панель массовых действий корзины: то же место в шапке, что и обычный
 /// bulk-toolbar (одинаковая высота — выбор первой заметки не сдвигает
 /// список).
+/// Полная очистка корзины (заметки + аудио) без ручного выделения чекбоксами
+/// — только с подтверждением, необратимо.
+class _ClearTrashButton extends ConsumerWidget {
+  const _ClearTrashButton();
+
+  Future<void> _clear(BuildContext context, WidgetRef ref) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Очистить корзину?'),
+        content: const Text(
+          'Все заметки и аудио в корзине будут удалены без возможности '
+          'восстановления.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            key: const ValueKey('confirm-clear-trash'),
+            style: FilledButton.styleFrom(
+              backgroundColor: PotokColors.of(dialogContext).danger,
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Удалить всё навсегда'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final service = await ref.read(notesServiceProvider.future);
+      final notes = await service.watchTrash().first;
+      if (notes.isNotEmpty) await service.purgeNotes(notes);
+      final audio = await service.watchTrashedAudio().first;
+      for (final item in audio) {
+        await service.purgeAudio(item.note, item.asset);
+      }
+      messenger.showSnackBar(
+        PotokSnackBar(content: const Text('Корзина очищена')),
+      );
+    } catch (e) {
+      debugPrint('clear trash failed: ${e.runtimeType}');
+      messenger.showSnackBar(
+        PotokSnackBar(content: const Text('Не удалось очистить корзину')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final c = PotokColors.of(context);
+    final hasNotes =
+        (ref.watch(visiblePagedNotesProvider).value?.notes ?? []).isNotEmpty;
+    final hasAudio =
+        (ref.watch(trashedAudioProvider).value ?? const <TrashedAudioItem>[])
+            .isNotEmpty;
+    if (!hasNotes && !hasAudio) return const SizedBox.shrink();
+    return Align(
+      alignment: Alignment.centerRight,
+      child: TextButton.icon(
+        key: const ValueKey('clear-trash-button'),
+        onPressed: () => _clear(context, ref),
+        icon: Icon(Icons.delete_forever_rounded, size: 18, color: c.danger),
+        label: Text('Очистить корзину', style: TextStyle(color: c.danger)),
+      ),
+    );
+  }
+}
+
 class _TrashBulkBar extends ConsumerWidget {
   final int selectedCount;
 
@@ -1747,6 +1841,7 @@ class _TrashList extends ConsumerWidget {
               .where((l) => l.trim().isNotEmpty)
               .toList(growable: false);
           final title = lines.isEmpty ? 'Аудиозаметка' : lines.first;
+          final trashPreview = lines.length > 1 ? lines.skip(1).join(' ') : '';
           final deletedAt = note.deletedAtUtc == null
               ? ''
               : dayLabel(
@@ -1790,10 +1885,27 @@ class _TrashList extends ConsumerWidget {
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(fontSize: 13, color: c.text),
                       ),
+                      if (trashPreview.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Text(
+                            trashPreview,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: c.muted,
+                              height: 1.3,
+                            ),
+                          ),
+                        ),
                       if (deletedAt.isNotEmpty)
-                        Text(
-                          'Удалено: $deletedAt',
-                          style: TextStyle(fontSize: 10, color: c.muted),
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Text(
+                            'Удалено: $deletedAt',
+                            style: TextStyle(fontSize: 10, color: c.muted),
+                          ),
                         ),
                     ],
                   ),
@@ -1840,7 +1952,10 @@ class _TrashList extends ConsumerWidget {
                   padding: const EdgeInsets.symmetric(vertical: 6),
                   child: Text(
                     'Заметки в корзине',
-                    style: TextStyle(fontWeight: FontWeight.w700, color: c.text),
+                    style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      color: c.text,
+                    ),
                   ),
                 ),
                 noteCard,

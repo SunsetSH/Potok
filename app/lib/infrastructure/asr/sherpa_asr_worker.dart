@@ -75,6 +75,47 @@ double sherpaRms(Float32List samples) {
   return math.sqrt(sumSquares / samples.length);
 }
 
+/// Removes only long silence at the edges while retaining padding around
+/// speech. NeMo/Parakeet transducers can return an empty hypothesis when a
+/// short phrase follows tens of seconds of leading silence. Short pauses and
+/// silence inside speech are deliberately untouched.
+Float32List trimLongEdgeSilence(
+  Float32List samples,
+  int sampleRate, {
+  double threshold = 0.002,
+  Duration minimumSilence = const Duration(seconds: 2),
+  Duration padding = const Duration(milliseconds: 400),
+}) {
+  if (samples.isEmpty || sampleRate <= 0) return samples;
+  final frameSize = math.max(1, sampleRate ~/ 20); // 50 ms
+  var firstSignal = -1;
+  var lastSignal = -1;
+  for (var start = 0; start < samples.length; start += frameSize) {
+    final end = math.min(start + frameSize, samples.length);
+    var sumSquares = 0.0;
+    for (var index = start; index < end; index++) {
+      sumSquares += samples[index] * samples[index];
+    }
+    final rms = math.sqrt(sumSquares / (end - start));
+    if (rms >= threshold) {
+      firstSignal = firstSignal < 0 ? start : firstSignal;
+      lastSignal = end;
+    }
+  }
+  if (firstSignal < 0) return samples;
+  final minimumSamples = minimumSilence.inMilliseconds * sampleRate ~/ 1000;
+  final paddingSamples = padding.inMilliseconds * sampleRate ~/ 1000;
+  final trimStart = firstSignal >= minimumSamples
+      ? math.max(0, firstSignal - paddingSamples)
+      : 0;
+  final trailingSilence = samples.length - lastSignal;
+  final trimEnd = trailingSilence >= minimumSamples
+      ? math.min(samples.length, lastSignal + paddingSamples)
+      : samples.length;
+  if (trimStart == 0 && trimEnd == samples.length) return samples;
+  return Float32List.sublistView(samples, trimStart, trimEnd);
+}
+
 /// Long-lived ASR isolate shared by every sherpa-onnx recognizer
 /// architecture. Requests are processed sequentially (the port is a natural
 /// queue), which also serializes CPU-heavy decodes and keeps at most one
@@ -245,9 +286,13 @@ class SherpaAsrWorker {
         audioDuration: audioDuration,
       );
     }
+    final decodeSamples =
+        request.files.modelType == 'nemo_transducer' && audioPath != null
+        ? trimLongEdgeSilence(samples, sampleRate)
+        : samples;
     final stream = recognizer.createStream();
     try {
-      stream.acceptWaveform(samples: samples, sampleRate: sampleRate);
+      stream.acceptWaveform(samples: decodeSamples, sampleRate: sampleRate);
       recognizer.decode(stream);
       final result = recognizer.getResult(stream);
       return SherpaAsrOutcome(

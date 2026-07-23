@@ -242,9 +242,7 @@ class TagManagementSection extends ConsumerWidget {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Удалить тег?'),
-        content: Text(
-          'Тег «${tag.name}» будет удалён и снят со всех заметок.',
-        ),
+        content: Text('Тег «${tag.name}» будет удалён и снят со всех заметок.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),
@@ -286,6 +284,59 @@ class TagManagementSection extends ConsumerWidget {
       return 'Проект недоступен';
     }
 
+    Widget tagTile(Tag tag) => ListTile(
+      key: ValueKey('manage-tag-${tag.id}'),
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      leading: Icon(Icons.label_rounded, color: Color(tag.colorArgb)),
+      title: Text(tag.name, overflow: TextOverflow.ellipsis),
+      subtitle: Text(
+        scopeLabel(tag),
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(fontSize: 11, color: c.muted),
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            tooltip: 'Редактировать тег',
+            onPressed: () => showTagEditorDialog(context, ref, tag: tag),
+            icon: const Icon(Icons.edit_outlined, size: 18),
+          ),
+          IconButton(
+            key: ValueKey('delete-tag-${tag.id}'),
+            tooltip: 'Удалить тег',
+            onPressed: () => _delete(context, ref, tag),
+            icon: Icon(Icons.delete_outline_rounded, size: 18, color: c.danger),
+          ),
+        ],
+      ),
+    );
+
+    Widget group(String title, List<Tag> items) => Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 12, bottom: 2),
+          child: Text(
+            '$title · ${items.length}',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              color: c.muted,
+            ),
+          ),
+        ),
+        if (items.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Text('Пока нет', style: TextStyle(color: c.muted)),
+          )
+        else
+          for (final tag in items) tagTile(tag),
+      ],
+    );
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -299,47 +350,19 @@ class TagManagementSection extends ConsumerWidget {
         tags.when(
           loading: () => const LinearProgressIndicator(minHeight: 2),
           error: (_, _) => const Text('Не удалось загрузить теги'),
-          data: (items) => Column(
-            children: [
-              for (final tag in items)
-                ListTile(
-                  key: ValueKey('manage-tag-${tag.id}'),
-                  contentPadding: EdgeInsets.zero,
-                  dense: true,
-                  leading: Icon(
-                    Icons.label_rounded,
-                    color: Color(tag.colorArgb),
-                  ),
-                  title: Text(tag.name, overflow: TextOverflow.ellipsis),
-                  subtitle: Text(
-                    scopeLabel(tag),
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 11, color: c.muted),
-                  ),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        tooltip: 'Редактировать тег',
-                        onPressed: () =>
-                            showTagEditorDialog(context, ref, tag: tag),
-                        icon: const Icon(Icons.edit_outlined, size: 18),
-                      ),
-                      IconButton(
-                        key: ValueKey('delete-tag-${tag.id}'),
-                        tooltip: 'Удалить тег',
-                        onPressed: () => _delete(context, ref, tag),
-                        icon: Icon(
-                          Icons.delete_outline_rounded,
-                          size: 18,
-                          color: c.danger,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-            ],
-          ),
+          data: (items) {
+            final global = items.where((tag) => tag.projectId == null).toList();
+            final project = items
+                .where((tag) => tag.projectId != null)
+                .toList();
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                group('Глобальные теги', global),
+                group('Теги проектов', project),
+              ],
+            );
+          },
         ),
       ],
     );

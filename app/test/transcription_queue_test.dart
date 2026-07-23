@@ -163,6 +163,22 @@ void main() {
     },
   );
 
+  test('empty final hypothesis preserves the durable live fallback', () async {
+    final staged = await recordedNote();
+    recognizer.nextText = '';
+
+    final id = await queue.enqueue(
+      staged.noteId,
+      staged.assetId,
+      fallbackText: 'фраза после долгой тишины',
+    );
+    await queue.idle();
+
+    final revision = await revisionById(id);
+    expect(revision.state, TranscriptState.ready);
+    expect(revision.rawText, 'фраза после долгой тишины');
+  });
+
   test(
     'engine failure -> failed with errorMessage; retry creates new revision',
     () async {

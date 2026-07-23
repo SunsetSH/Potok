@@ -17,6 +17,7 @@ import 'data_section.dart';
 import 'entity_color_palette.dart';
 import 'move_note.dart';
 import 'providers.dart';
+import 'settings_screen.dart';
 import 'snackbars.dart';
 import 'tag_management.dart';
 import 'theme.dart';
@@ -236,7 +237,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
             icon: Icons.settings_outlined,
             label: 'Настройки',
             active: false,
-            onTap: () => showAppearanceDialog(context, ref),
+            onTap: () => showOrganizedSettings(context),
           ),
         ],
       ),
@@ -516,7 +517,8 @@ Future<void> showCreateProjectDialog(BuildContext context, WidgetRef ref) {
   ).whenComplete(controller.dispose);
 }
 
-/// «Настройки»: выбор темы (app_meta) и секция распознавания речи.
+/// Старый одностраничный API оставлен только для совместимости внешних вызовов.
+@Deprecated('Use showOrganizedSettings')
 Future<void> showAppearanceDialog(BuildContext context, WidgetRef ref) {
   return showDialog<void>(
     context: context,
@@ -526,6 +528,15 @@ Future<void> showAppearanceDialog(BuildContext context, WidgetRef ref) {
           final c = PotokColors.of(dialogContext);
           final current =
               dialogRef.watch(themeIdProvider).value ?? PotokThemeId.studio;
+          final themeMode =
+              dialogRef.watch(potokThemeModeProvider).value ??
+              PotokThemeMode.fixed;
+          final systemLight =
+              dialogRef.watch(systemLightThemeProvider).value ??
+              PotokThemeId.studio;
+          final systemDark =
+              dialogRef.watch(systemDarkThemeProvider).value ??
+              PotokThemeId.studioNight;
           return AlertDialog(
             title: const Text('Настройки'),
             scrollable: true,
@@ -546,68 +557,122 @@ Future<void> showAppearanceDialog(BuildContext context, WidgetRef ref) {
                       ),
                     ),
                   ),
-                  for (final id in PotokThemeId.values)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(c.radiusSmall),
-                        onTap: () async {
-                          try {
-                            await dialogRef
-                                .read(settingsServiceProvider)
-                                .set(SettingsService.themeKey, id.storageKey);
-                          } catch (e) {
-                            debugPrint('theme save failed: ${e.runtimeType}');
-                          }
-                        },
-                        child: Container(
-                          constraints: const BoxConstraints(minHeight: 48),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 10,
-                          ),
-                          decoration: BoxDecoration(
-                            color: c.surface2,
-                            border: Border.all(
-                              color: current == id ? c.accent : c.line,
+                  SegmentedButton<PotokThemeMode>(
+                    segments: const [
+                      ButtonSegment(
+                        value: PotokThemeMode.fixed,
+                        label: Text('Выбранная'),
+                        icon: Icon(Icons.palette_outlined),
+                      ),
+                      ButtonSegment(
+                        value: PotokThemeMode.system,
+                        label: Text('Как в системе'),
+                        icon: Icon(Icons.brightness_auto_outlined),
+                      ),
+                    ],
+                    selected: {themeMode},
+                    onSelectionChanged: (selection) => dialogRef
+                        .read(settingsServiceProvider)
+                        .set(
+                          SettingsService.themeModeKey,
+                          selection.single.name,
+                        ),
+                  ),
+                  const SizedBox(height: 12),
+                  if (themeMode == PotokThemeMode.fixed)
+                    for (final id in PotokThemeId.values)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(c.radiusSmall),
+                          onTap: () async {
+                            try {
+                              await dialogRef
+                                  .read(settingsServiceProvider)
+                                  .set(SettingsService.themeKey, id.storageKey);
+                            } catch (e) {
+                              debugPrint('theme save failed: ${e.runtimeType}');
+                            }
+                          },
+                          child: Container(
+                            constraints: const BoxConstraints(minHeight: 48),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 10,
                             ),
-                            borderRadius: BorderRadius.circular(c.radiusSmall),
-                          ),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      id.title,
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.w700,
-                                        fontSize: 13,
-                                        color: c.text,
-                                      ),
-                                    ),
-                                    Text(
-                                      id.subtitle,
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        color: c.muted,
-                                      ),
-                                    ),
-                                  ],
-                                ),
+                            decoration: BoxDecoration(
+                              color: c.surface2,
+                              border: Border.all(
+                                color: current == id ? c.accent : c.line,
                               ),
-                              if (current == id)
-                                Icon(
-                                  Icons.check_rounded,
-                                  size: 18,
-                                  color: c.accent,
+                              borderRadius: BorderRadius.circular(
+                                c.radiusSmall,
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        id.title,
+                                        style: TextStyle(
+                                          fontWeight: FontWeight.w700,
+                                          fontSize: 13,
+                                          color: c.text,
+                                        ),
+                                      ),
+                                      Text(
+                                        id.subtitle,
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          color: c.muted,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                            ],
+                                if (current == id)
+                                  Icon(
+                                    Icons.check_rounded,
+                                    size: 18,
+                                    color: c.accent,
+                                  ),
+                              ],
+                            ),
                           ),
                         ),
                       ),
+                  if (themeMode == PotokThemeMode.system) ...[
+                    _ThemeRoleSelector(
+                      label: 'Дневная тема',
+                      value: systemLight,
+                      onChanged: (id) => dialogRef
+                          .read(settingsServiceProvider)
+                          .set(
+                            SettingsService.systemLightThemeKey,
+                            id.storageKey,
+                          ),
                     ),
+                    const SizedBox(height: 10),
+                    _ThemeRoleSelector(
+                      label: 'Ночная тема',
+                      value: systemDark,
+                      onChanged: (id) => dialogRef
+                          .read(settingsServiceProvider)
+                          .set(
+                            SettingsService.systemDarkThemeKey,
+                            id.storageKey,
+                          ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Переключение использует системную светлую/тёмную тему Android или Windows.',
+                      style: TextStyle(fontSize: 11, color: c.muted),
+                    ),
+                  ],
                   Divider(color: c.line, height: 24),
                   Padding(
                     padding: const EdgeInsets.only(bottom: 8),
@@ -634,6 +699,19 @@ Future<void> showAppearanceDialog(BuildContext context, WidgetRef ref) {
                     ),
                   ),
                   const _AsrSettingsSection(),
+                  Divider(color: c.line, height: 24),
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      'Классификация голосом',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: c.muted,
+                      ),
+                    ),
+                  ),
+                  const _VoiceClassificationSection(),
                   Divider(color: c.line, height: 24),
                   Padding(
                     padding: const EdgeInsets.only(bottom: 8),
@@ -704,6 +782,297 @@ Future<void> showAppearanceDialog(BuildContext context, WidgetRef ref) {
       );
     },
   );
+}
+
+Future<void> showOrganizedSettings(BuildContext context) {
+  return showSettingsScreen(
+    context,
+    destinations: [
+      SettingsDestination(
+        id: 'appearance',
+        title: 'Внешний вид',
+        subtitle: 'Тема и системный режим',
+        icon: Icons.palette_outlined,
+        builder: (_) => const _AppearanceSettingsSection(),
+      ),
+      SettingsDestination(
+        id: 'recording',
+        title: 'Запись звука',
+        subtitle: 'Микрофон, качество и длительность',
+        icon: Icons.mic_none_rounded,
+        builder: (_) => const _AudioSettingsSection(showStorage: false),
+      ),
+      SettingsDestination(
+        id: 'recognition',
+        title: 'Распознавание речи',
+        subtitle: 'Модели и индикатор выполнения',
+        icon: Icons.graphic_eq_rounded,
+        builder: (_) => const _AsrSettingsSection(),
+      ),
+      SettingsDestination(
+        id: 'automation',
+        title: 'Автоматизация',
+        subtitle: 'Теги и проекты из речи',
+        icon: Icons.auto_awesome_outlined,
+        builder: (_) => const _VoiceClassificationSection(),
+      ),
+      SettingsDestination(
+        id: 'organization',
+        title: 'Организация',
+        subtitle: 'Глобальные и проектные теги',
+        icon: Icons.label_outline_rounded,
+        builder: (_) => const TagManagementSection(),
+      ),
+      SettingsDestination(
+        id: 'integrations',
+        title: 'Интеграции',
+        subtitle: Platform.isWindows
+            ? 'Трей и глобальная горячая клавиша'
+            : 'Виджеты и быстрый ввод',
+        icon: Icons.extension_outlined,
+        builder: (_) => const _IntegrationSettingsSection(),
+      ),
+      SettingsDestination(
+        id: 'data',
+        title: 'Данные и хранилище',
+        subtitle: 'Место, экспорт и резервные копии',
+        icon: Icons.storage_outlined,
+        builder: (_) => const _DataAndStorageSettingsSection(),
+      ),
+    ],
+  );
+}
+
+class _AppearanceSettingsSection extends ConsumerWidget {
+  const _AppearanceSettingsSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final c = PotokColors.of(context);
+    final current = ref.watch(themeIdProvider).value ?? PotokThemeId.studio;
+    final themeMode =
+        ref.watch(potokThemeModeProvider).value ?? PotokThemeMode.fixed;
+    final systemLight =
+        ref.watch(systemLightThemeProvider).value ?? PotokThemeId.studio;
+    final systemDark =
+        ref.watch(systemDarkThemeProvider).value ?? PotokThemeId.studioNight;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SegmentedButton<PotokThemeMode>(
+          segments: const [
+            ButtonSegment(
+              value: PotokThemeMode.fixed,
+              label: Text('Выбранная'),
+              icon: Icon(Icons.palette_outlined),
+            ),
+            ButtonSegment(
+              value: PotokThemeMode.system,
+              label: Text('Как в системе'),
+              icon: Icon(Icons.brightness_auto_outlined),
+            ),
+          ],
+          selected: {themeMode},
+          onSelectionChanged: (selection) => ref
+              .read(settingsServiceProvider)
+              .set(SettingsService.themeModeKey, selection.single.name),
+        ),
+        const SizedBox(height: 16),
+        if (themeMode == PotokThemeMode.fixed)
+          for (final id in PotokThemeId.values)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(c.radiusSmall),
+                onTap: () => ref
+                    .read(settingsServiceProvider)
+                    .set(SettingsService.themeKey, id.storageKey),
+                child: Container(
+                  constraints: const BoxConstraints(minHeight: 56),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 11,
+                  ),
+                  decoration: BoxDecoration(
+                    color: c.surface2,
+                    border: Border.all(
+                      color: current == id ? c.accent : c.line,
+                    ),
+                    borderRadius: BorderRadius.circular(c.radiusSmall),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              id.title,
+                              style: TextStyle(
+                                fontWeight: FontWeight.w700,
+                                color: c.text,
+                              ),
+                            ),
+                            Text(
+                              id.subtitle,
+                              style: TextStyle(fontSize: 11, color: c.muted),
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (current == id)
+                        Icon(Icons.check_rounded, size: 19, color: c.accent),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+        if (themeMode == PotokThemeMode.system) ...[
+          _ThemeRoleSelector(
+            label: 'Дневная тема',
+            value: systemLight,
+            onChanged: (id) => ref
+                .read(settingsServiceProvider)
+                .set(SettingsService.systemLightThemeKey, id.storageKey),
+          ),
+          const SizedBox(height: 10),
+          _ThemeRoleSelector(
+            label: 'Ночная тема',
+            value: systemDark,
+            onChanged: (id) => ref
+                .read(settingsServiceProvider)
+                .set(SettingsService.systemDarkThemeKey, id.storageKey),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Приложение следует системной светлой или тёмной теме Android и Windows.',
+            style: TextStyle(fontSize: 11, color: c.muted),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _IntegrationSettingsSection extends StatelessWidget {
+  const _IntegrationSettingsSection();
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (windowsShellAvailable) ...[
+          const _SettingsGroupTitle(
+            title: 'Windows',
+            subtitle: 'Поведение окна и быстрый вызов приложения',
+          ),
+          const _SystemSettingsSection(),
+        ],
+        if (androidLaunchIntentsAvailable) ...[
+          const _SettingsGroupTitle(
+            title: 'Виджеты Android',
+            subtitle: 'Параметры заметок, создаваемых с рабочего стола',
+          ),
+          const _AndroidWidgetSettingsSection(),
+        ],
+      ],
+    );
+  }
+}
+
+class _DataAndStorageSettingsSection extends StatelessWidget {
+  const _DataAndStorageSettingsSection();
+
+  @override
+  Widget build(BuildContext context) {
+    final c = PotokColors.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const _SettingsGroupTitle(
+          title: 'Использование места',
+          subtitle: 'Локальные медиафайлы и свободное пространство',
+        ),
+        const _StorageUsageSection(),
+        Divider(height: 32, color: c.line),
+        const _SettingsGroupTitle(
+          title: 'Перенос и восстановление',
+          subtitle: 'Резервные копии не шифруются',
+        ),
+        const DataSettingsSection(),
+      ],
+    );
+  }
+}
+
+class _SettingsGroupTitle extends StatelessWidget {
+  final String title;
+  final String subtitle;
+
+  const _SettingsGroupTitle({required this.title, required this.subtitle});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = PotokColors.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: TextStyle(fontWeight: FontWeight.w800, color: c.text),
+          ),
+          const SizedBox(height: 2),
+          Text(subtitle, style: TextStyle(fontSize: 11, color: c.muted)),
+        ],
+      ),
+    );
+  }
+}
+
+class _ThemeRoleSelector extends StatelessWidget {
+  final String label;
+  final PotokThemeId value;
+  final ValueChanged<PotokThemeId> onChanged;
+
+  const _ThemeRoleSelector({
+    required this.label,
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = PotokColors.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: c.surface2,
+        border: Border.all(color: c.line),
+        borderRadius: BorderRadius.circular(c.radiusSmall),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(label, style: TextStyle(fontSize: 12, color: c.text)),
+          ),
+          DropdownButton<PotokThemeId>(
+            value: value,
+            underline: const SizedBox.shrink(),
+            onChanged: (id) {
+              if (id != null) onChanged(id);
+            },
+            items: [
+              for (final id in PotokThemeId.values)
+                DropdownMenuItem(value: id, child: Text(id.title)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _AndroidWidgetSettingsSection extends ConsumerWidget {
@@ -806,8 +1175,67 @@ class _SystemSettingsSection extends ConsumerWidget {
   }
 }
 
+/// Режим голосовой классификации + краткая памятка, как надо говорить.
+class _VoiceClassificationSection extends ConsumerWidget {
+  const _VoiceClassificationSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final c = PotokColors.of(context);
+    final mode =
+        ref.watch(voiceClassificationModeProvider).value ??
+        VoiceClassificationMode.off;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        DropdownButtonFormField<VoiceClassificationMode>(
+          key: const ValueKey('voice-classification-mode'),
+          initialValue: mode,
+          decoration: const InputDecoration(
+            labelText: 'Ставить теги и проект из речи',
+          ),
+          items: const [
+            DropdownMenuItem(
+              value: VoiceClassificationMode.off,
+              child: Text('Выключено'),
+            ),
+            DropdownMenuItem(
+              value: VoiceClassificationMode.confirm,
+              child: Text('С подтверждением'),
+            ),
+            DropdownMenuItem(
+              value: VoiceClassificationMode.auto,
+              child: Text('Автоматически'),
+            ),
+          ],
+          onChanged: (value) {
+            if (value == null) return;
+            unawaited(
+              ref
+                  .read(settingsServiceProvider)
+                  .set(
+                    SettingsService.voiceClassificationModeKey,
+                    value.storageValue,
+                  ),
+            );
+          },
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'После расшифровки скажите «Тег(и): вопрос, задача» или «Поставь тег '
+          'важно», для проекта — «В проект Работа». Ставятся только уже '
+          'существующие теги и проекты.',
+          style: TextStyle(fontSize: 11, color: c.muted, height: 1.35),
+        ),
+      ],
+    );
+  }
+}
+
 class _AudioSettingsSection extends ConsumerWidget {
-  const _AudioSettingsSection();
+  final bool showStorage;
+
+  const _AudioSettingsSection({this.showStorage = true});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -872,7 +1300,87 @@ class _AudioSettingsSection extends ConsumerWidget {
           'Без модели используется компактный M4A.',
           style: TextStyle(fontSize: 11, color: c.muted, height: 1.35),
         ),
-        const SizedBox(height: 12),
+        if (showStorage) ...[
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: c.surface2,
+              border: Border.all(color: c.line),
+              borderRadius: BorderRadius.circular(c.radiusSmall),
+            ),
+            child: usage.when(
+              loading: () => const Center(child: CircularProgressIndicator()),
+              error: (_, _) => const Text('Не удалось подсчитать место'),
+              data: (value) => Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Хранилище',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w700,
+                            color: c.text,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Обновить',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () => ref.invalidate(storageUsageProvider),
+                        icon: const Icon(Icons.refresh_rounded, size: 18),
+                      ),
+                    ],
+                  ),
+                  Text('Аудио: ${_formatStorage(value.audioBytes)}'),
+                  Text('Изображения: ${_formatStorage(value.imageBytes)}'),
+                  Text('В корзине: ${_formatStorage(value.trashBytes)}'),
+                  Text('Свободно: ${_formatStorage(value.freeBytes)}'),
+                  if (value.missingCount > 0)
+                    Text(
+                      'Повреждённых/отсутствующих: ${value.missingCount}',
+                      style: TextStyle(color: c.danger),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Удалённое аудио — в общей корзине (раздел «Корзина» в списке '
+            'заметок).',
+            style: TextStyle(fontSize: 11, color: c.muted),
+          ),
+        ],
+      ],
+    );
+  }
+
+  String _formatStorage(int? bytes) {
+    if (bytes == null) return 'нет данных';
+    if (bytes >= 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} ГБ';
+    }
+    if (bytes >= 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} МБ';
+    }
+    if (bytes >= 1024) return '${(bytes / 1024).toStringAsFixed(1)} КБ';
+    return '$bytes Б';
+  }
+}
+
+class _StorageUsageSection extends ConsumerWidget {
+  const _StorageUsageSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final c = PotokColors.of(context);
+    final usage = ref.watch(storageUsageProvider);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
         Container(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
@@ -905,13 +1413,13 @@ class _AudioSettingsSection extends ConsumerWidget {
                     ),
                   ],
                 ),
-                Text('Аудио: ${_formatStorage(value.audioBytes)}'),
-                Text('Изображения: ${_formatStorage(value.imageBytes)}'),
-                Text('В корзине: ${_formatStorage(value.trashBytes)}'),
-                Text('Свободно: ${_formatStorage(value.freeBytes)}'),
+                Text('Аудио: ${_formatStorageBytes(value.audioBytes)}'),
+                Text('Изображения: ${_formatStorageBytes(value.imageBytes)}'),
+                Text('В корзине: ${_formatStorageBytes(value.trashBytes)}'),
+                Text('Свободно: ${_formatStorageBytes(value.freeBytes)}'),
                 if (value.missingCount > 0)
                   Text(
-                    'Повреждённых/отсутствующих: ${value.missingCount}',
+                    'Повреждённых или отсутствующих: ${value.missingCount}',
                     style: TextStyle(color: c.danger),
                   ),
               ],
@@ -920,15 +1428,14 @@ class _AudioSettingsSection extends ConsumerWidget {
         ),
         const SizedBox(height: 8),
         Text(
-          'Удалённое аудио — в общей корзине (раздел «Корзина» в списке '
-          'заметок).',
+          'Удалённые медиафайлы учитываются в общей корзине заметок.',
           style: TextStyle(fontSize: 11, color: c.muted),
         ),
       ],
     );
   }
 
-  String _formatStorage(int? bytes) {
+  String _formatStorageBytes(int? bytes) {
     if (bytes == null) return 'нет данных';
     if (bytes >= 1024 * 1024 * 1024) {
       return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} ГБ';
@@ -1166,6 +1673,8 @@ class _AsrSettingsSectionState extends ConsumerState<_AsrSettingsSection> {
   Widget build(BuildContext context) {
     final c = PotokColors.of(context);
     final active = ref.watch(activeAsrModelProvider).value;
+    final showProgress =
+        ref.watch(showTranscriptionProgressProvider).value ?? true;
     final activeLabel = active == null
         ? 'Модель не установлена'
         : '${active.modelId} · ${active.languages.join(', ')} · '
@@ -1174,6 +1683,21 @@ class _AsrSettingsSectionState extends ConsumerState<_AsrSettingsSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        SwitchListTile.adaptive(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Показывать прогресс распознавания'),
+          subtitle: const Text(
+            'Без расчётного времени: sherpa-onnx не сообщает точный процент.',
+          ),
+          value: showProgress,
+          onChanged: (value) => ref
+              .read(settingsServiceProvider)
+              .set(
+                SettingsService.showTranscriptionProgressKey,
+                value ? '1' : '0',
+              ),
+        ),
+        const SizedBox(height: 4),
         Row(
           children: [
             Icon(

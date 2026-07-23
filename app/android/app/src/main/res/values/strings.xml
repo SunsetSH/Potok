@@ -12,4 +12,28 @@
     <string name="widget_audio">+Audio</string>
     <string name="widget_text_description">Create a text note</string>
     <string name="widget_audio_description">Start an audio note</string>
+
+    <string name="widget_recent_description">Последняя заметка Потока</string>
+    <string name="widget_list_description">Список последних заметок Потока</string>
+    <string name="widget_selectable_description">Выбранная заметка или проект Потока</string>
+    <string name="widget_list_title">Заметки</string>
+    <string name="widget_empty_note">Заметок пока нет</string>
+
+    <string name="widget_config_title">Настройка виджета</string>
+    <string name="widget_config_subtitle">Выберите динамическую подборку или закрепите конкретную заметку</string>
+    <string name="widget_config_mode_latest">Самая свежая заметка</string>
+    <string name="widget_config_mode_favorite">Последняя избранная</string>
+    <string name="widget_config_mode_in_work">Последняя в работе</string>
+    <string name="widget_config_mode_note">Конкретная заметка</string>
+    <string name="widget_config_mode_project">Последняя заметка проекта</string>
+    <string name="widget_config_search_hint">Поиск по названию и тексту</string>
+    <string name="widget_config_apply">Добавить виджет</string>
+    <string name="widget_config_no_notes">Заметок пока нет</string>
+    <string name="widget_config_no_projects">Проектов пока нет</string>
+
+    <string name="widget_preview_title">Идеи к проекту</string>
+    <string name="widget_preview_snippet">Обсудить сроки, собрать требования и накидать план на неделю.</string>
+    <string name="widget_preview_project">Работа</string>
+    <string name="widget_preview_title_2">Список покупок</string>
+    <string name="widget_preview_snippet_2">Молоко, хлеб, кофе и что-нибудь к чаю.</string>
 </resources>

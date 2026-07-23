@@ -22,6 +22,7 @@ import '../infrastructure/recording_platform.dart';
 import 'image_paste_intent.dart';
 import 'providers.dart';
 import 'snackbars.dart';
+import 'tag_management.dart';
 import 'theme.dart';
 
 bool _captureOpen = false;
@@ -130,6 +131,11 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
   String? _projectId;
   Note? _imageDraft;
 
+  /// Теги, выбранные до сохранения — применяются сразу после создания
+  /// заметки (тем же способом, что и `_projectId`, который тоже фиксируется
+  /// в момент создания, а не постфактум).
+  Set<String> _selectedTagIds = {};
+
   StagedRecording? _staged;
   DateTime? _recordingStarted;
   Timer? _ticker;
@@ -150,11 +156,7 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
   double _level = 0;
   // growable: true — иначе removeAt/add ниже кидают UnsupportedError на
   // первом же событии уровня, и волна визуально замирает навсегда.
-  final List<double> _levelHistory = List<double>.filled(
-    36,
-    0,
-    growable: true,
-  );
+  final List<double> _levelHistory = List<double>.filled(36, 0, growable: true);
   int? _freeBytes;
   bool _storageCheckInFlight = false;
   bool _recordingPaused = false;
@@ -292,6 +294,21 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
     return 'Без проекта';
   }
 
+  /// Применяет теги, выбранные до сохранения. Лучшее усилие — сбой не
+  /// должен мешать самой заметке сохраниться (она уже создана к этому
+  /// моменту), поэтому ошибка только логируется.
+  Future<void> _applySelectedTags(String noteId) async {
+    if (_selectedTagIds.isEmpty) return;
+    try {
+      final tagsService = await ref.read(tagsServiceProvider.future);
+      for (final tagId in _selectedTagIds) {
+        await tagsService.assignTag(noteId, tagId);
+      }
+    } catch (e) {
+      debugPrint('capture tag assign failed: ${e.runtimeType}');
+    }
+  }
+
   Future<void> _saveText(NotesService service, List<Project> projects) async {
     final text = _controller.text.trim();
     final imageDraft = _imageDraft;
@@ -308,11 +325,12 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
     try {
       final projectId = _projectId;
       if (imageDraft == null) {
-        await service.createTextNote(
+        final noteId = await service.createTextNote(
           text,
           projectId: projectId,
           sourceKind: widget.sourceKind,
         );
+        await _applySelectedTags(noteId);
       } else {
         final imageDocument = PotokDocument.decode(imageDraft.documentJson);
         var document = PotokDocument.fromPlainText(text);
@@ -335,6 +353,7 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
           document,
           projectId: projectId,
         );
+        await _applySelectedTags(imageDraft.id);
         _imageDraft = null;
       }
       _draftDebounce?.cancel();
@@ -563,6 +582,9 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
       if (mounted) setState(() => _error = 'Заметка изменилась — повторите');
       return;
     }
+    if (widget.attachToNote == null) {
+      await _applySelectedTags(newStaged.noteId);
+    }
     try {
       final selectedInputId = await settings.get(
         SettingsService.audioInputDeviceKey,
@@ -679,6 +701,7 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
     final service = _notesService;
     if (service == null) return;
     final comment = _controller.text;
+    final liveTranscript = _liveTranscript;
     final duration = _elapsed;
     _staged = null;
     _recordingStarted = null;
@@ -701,7 +724,14 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
         channels: 1,
         comment: widget.attachToNote == null ? comment : null,
       );
-      await _enqueueTranscriptionIfModelActive(staged);
+      // The live decoder can preserve a short spoken command that the final
+      // full-file pass later misrecognizes. Both paths use one deduplicating
+      // coordinator and only match already existing entities.
+      await ref.read(processVoiceClassificationProvider)(
+        staged.noteId,
+        liveTranscript,
+      );
+      await _enqueueTranscriptionIfModelActive(staged, liveTranscript);
       if (widget.attachToNote == null && _controller.text.trim().isEmpty) {
         _draftDebounce?.cancel();
         _draftDirty = false;
@@ -721,11 +751,13 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
 
   Future<void> _enqueueTranscriptionIfModelActive(
     StagedRecording staged,
+    String liveTranscript,
   ) async {
     try {
       await ref.read(automaticTranscriptionEnqueueProvider)(
         staged.noteId,
         staged.assetId,
+        liveTranscript,
       );
     } catch (error) {
       // Audio is already ready and remains available for explicit retry.
@@ -910,6 +942,8 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
     final projects = ref.watch(projectsProvider).value ?? const <Project>[];
     final effectiveProjectId = _projectId;
     final recording = _staged != null;
+    final showTranscriptionProgress =
+        ref.watch(showTranscriptionProgressProvider).value ?? true;
     final viewInsets = MediaQuery.of(context).viewInsets;
     var imageCount = 0;
     final imageDraft = _imageDraft;
@@ -981,13 +1015,24 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
                 alignment: Platform.isAndroid
                     ? Alignment.centerRight
                     : Alignment.centerLeft,
-                child: _ProjectChip(
-                  projects: projects,
-                  projectId: effectiveProjectId,
-                  onSelected: (id) {
-                    setState(() => _projectId = id);
-                    _scheduleDraftSave();
-                  },
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _TagSelectorChip(
+                      projectId: effectiveProjectId,
+                      selectedTagIds: _selectedTagIds,
+                      onChanged: (ids) => setState(() => _selectedTagIds = ids),
+                    ),
+                    const SizedBox(width: 8),
+                    _ProjectChip(
+                      projects: projects,
+                      projectId: effectiveProjectId,
+                      onSelected: (id) {
+                        setState(() => _projectId = id);
+                        _scheduleDraftSave();
+                      },
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(height: 12),
@@ -1008,7 +1053,7 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
                   },
                   child: TextField(
                     controller: _controller,
-                    autofocus: true,
+                    autofocus: false,
                     minLines: 5,
                     maxLines: 10,
                     onChanged: (_) => _scheduleDraftSave(),
@@ -1078,10 +1123,26 @@ class _CaptureSheetState extends ConsumerState<CaptureSheet> {
                           ),
                           if (_liveModelDir != null) ...[
                             const SizedBox(height: 6),
-                            ConstrainedBox(
-                              constraints: const BoxConstraints(
-                                maxHeight: 64,
+                            if (showTranscriptionProgress) ...[
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(999),
+                                child: LinearProgressIndicator(
+                                  key: const ValueKey(
+                                    'live-transcription-progress',
+                                  ),
+                                  value: _liveDecodeInFlight
+                                      ? null
+                                      : (_livePcmBytes.length / 128000).clamp(
+                                          0.0,
+                                          1.0,
+                                        ),
+                                  minHeight: 3,
+                                ),
                               ),
+                              const SizedBox(height: 5),
+                            ],
+                            ConstrainedBox(
+                              constraints: const BoxConstraints(maxHeight: 64),
                               child: Scrollbar(
                                 controller: _liveTranscriptScroll,
                                 child: SingleChildScrollView(
@@ -1344,6 +1405,159 @@ class _ProjectChip extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Мультивыбор тегов до сохранения заметки — теги ещё не привязаны ни к
+/// какой заметке (её пока не существует), поэтому выбор живёт локально в
+/// состоянии шторки и применяется сразу после создания (см.
+/// `_applySelectedTags`), тем же способом, что и выбор проекта.
+class _TagSelectorChip extends ConsumerWidget {
+  final String? projectId;
+  final Set<String> selectedTagIds;
+  final ValueChanged<Set<String>> onChanged;
+
+  const _TagSelectorChip({
+    required this.projectId,
+    required this.selectedTagIds,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final c = PotokColors.of(context);
+    return InkWell(
+      key: const ValueKey('capture-tag-selector'),
+      borderRadius: BorderRadius.circular(999),
+      onTap: () async {
+        final result = await showDialog<Set<String>>(
+          context: context,
+          builder: (dialogContext) => _CaptureTagPickerDialog(
+            projectId: projectId,
+            initialSelected: selectedTagIds,
+          ),
+        );
+        if (result != null) onChanged(result);
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          border: Border.all(color: c.line),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.label_outline_rounded, size: 14, color: c.muted),
+            const SizedBox(width: 6),
+            Text(
+              selectedTagIds.isEmpty
+                  ? 'Теги'
+                  : 'Теги · ${selectedTagIds.length}',
+              style: TextStyle(fontSize: 11, color: c.muted),
+            ),
+            const SizedBox(width: 4),
+            Icon(Icons.arrow_drop_down_rounded, size: 16, color: c.muted),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CaptureTagPickerDialog extends ConsumerStatefulWidget {
+  final String? projectId;
+  final Set<String> initialSelected;
+
+  const _CaptureTagPickerDialog({
+    required this.projectId,
+    required this.initialSelected,
+  });
+
+  @override
+  ConsumerState<_CaptureTagPickerDialog> createState() =>
+      _CaptureTagPickerDialogState();
+}
+
+class _CaptureTagPickerDialogState
+    extends ConsumerState<_CaptureTagPickerDialog> {
+  late final Set<String> _selected = Set.of(widget.initialSelected);
+
+  Future<void> _createAndSelect() async {
+    final tagId = await showTagEditorDialog(
+      context,
+      ref,
+      initialProjectId: widget.projectId,
+    );
+    if (tagId == null || !mounted) return;
+    setState(() => _selected.add(tagId));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = PotokColors.of(context);
+    final tags =
+        ref.watch(availableTagsProvider(widget.projectId)).value ??
+        const <Tag>[];
+    return AlertDialog(
+      title: const Text('Теги заметки'),
+      content: SizedBox(
+        width: 340,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  for (final tag in tags)
+                    CheckboxListTile(
+                      key: ValueKey('capture-tag-picker-${tag.id}'),
+                      dense: true,
+                      value: _selected.contains(tag.id),
+                      onChanged: (value) => setState(() {
+                        if (value ?? false) {
+                          _selected.add(tag.id);
+                        } else {
+                          _selected.remove(tag.id);
+                        }
+                      }),
+                      secondary: Icon(
+                        Icons.circle,
+                        size: 12,
+                        color: Color(tag.colorArgb),
+                      ),
+                      title: Text(tag.name),
+                    ),
+                  if (tags.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      child: Text(
+                        'Тегов пока нет',
+                        style: TextStyle(fontSize: 12, color: c.muted),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            const Divider(),
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.add_rounded, size: 18),
+              title: const Text('Создать тег…'),
+              onTap: _createAndSelect,
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        FilledButton(
+          key: const ValueKey('capture-tag-picker-done'),
+          onPressed: () => Navigator.of(context).pop(_selected),
+          child: const Text('Готово'),
+        ),
+      ],
     );
   }
 }

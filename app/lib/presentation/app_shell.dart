@@ -36,7 +36,12 @@ class AppShell extends ConsumerWidget {
 
     final error = notes.error ?? projects.error ?? tags.error;
     if (error != null) {
-      debugPrint('startup failed: ${error.runtimeType}');
+      final source = notes.hasError
+          ? 'notes'
+          : projects.hasError
+          ? 'projects'
+          : 'tags';
+      debugPrint('startup $source failed: ${error.runtimeType}');
       return Scaffold(
         body: Center(
           child: Column(
@@ -293,7 +298,7 @@ class _MobileNavigationState extends ConsumerState<_MobileNavigation> {
                     title: const Text('Настройки'),
                     onTap: () async {
                       Navigator.of(sheetContext).pop();
-                      await showAppearanceDialog(context, ref);
+                      await showOrganizedSettings(context);
                     },
                   ),
                 ],
@@ -377,6 +382,12 @@ class _CaptureFab extends StatelessWidget {
 }
 
 /// Узкий макет: detail поверх списка (push). Esc закрывает detail.
+/// Маршрут к полной карточке заметки — узкий макет и deep-link из
+/// Android-виджета открывают её поверх списка. Выбор заметки идёт через
+/// [selectedNoteIdProvider], который читает detail-панель.
+Route<void> buildNoteDetailRoute() =>
+    MaterialPageRoute<void>(builder: (_) => const _DetailPage());
+
 class _DetailPage extends StatelessWidget {
   const _DetailPage();
 
